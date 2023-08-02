@@ -3,38 +3,111 @@ package weed_server
 import (
 	"context"
 	"fmt"
+	"reflect"
+	"strings"
+	"sync"
+	"time"
 
-	"github.com/chrislusf/raft"
+	"github.com/seaweedfs/raft"
 
-	"github.com/chrislusf/seaweedfs/weed/pb/master_pb"
-	"github.com/chrislusf/seaweedfs/weed/security"
-	"github.com/chrislusf/seaweedfs/weed/storage/needle"
-	"github.com/chrislusf/seaweedfs/weed/storage/super_block"
-	"github.com/chrislusf/seaweedfs/weed/topology"
+	"github.com/seaweedfs/seaweedfs/weed/glog"
+	"github.com/seaweedfs/seaweedfs/weed/pb/master_pb"
+	"github.com/seaweedfs/seaweedfs/weed/security"
+	"github.com/seaweedfs/seaweedfs/weed/storage/needle"
+	"github.com/seaweedfs/seaweedfs/weed/storage/super_block"
+	"github.com/seaweedfs/seaweedfs/weed/storage/types"
+	"github.com/seaweedfs/seaweedfs/weed/topology"
 )
+
+func (ms *MasterServer) ProcessGrowRequest() {
+	go func() {
+		filter := sync.Map{}
+		for {
+			req, ok := <-ms.vgCh
+			if !ok {
+				break
+			}
+
+			if !ms.Topo.IsLeader() {
+				//discard buffered requests
+				time.Sleep(time.Second * 1)
+				continue
+			}
+
+			// filter out identical requests being processed
+			found := false
+			filter.Range(func(k, v interface{}) bool {
+				if reflect.DeepEqual(k, req) {
+					found = true
+				}
+				return !found
+			})
+
+			option := req.Option
+			vl := ms.Topo.GetVolumeLayout(option.Collection, option.ReplicaPlacement, option.Ttl, option.DiskType)
+
+			// not atomic but it's okay
+			if !found && vl.ShouldGrowVolumes(option) {
+				filter.Store(req, nil)
+				// we have lock called inside vg
+				go func() {
+					glog.V(1).Infoln("starting automatic volume grow")
+					start := time.Now()
+					newVidLocations, err := ms.vg.AutomaticGrowByType(req.Option, ms.grpcDialOption, ms.Topo, req.Count)
+					glog.V(1).Infoln("finished automatic volume grow, cost ", time.Now().Sub(start))
+					if err == nil {
+						for _, newVidLocation := range newVidLocations {
+							ms.broadcastToClients(&master_pb.KeepConnectedResponse{VolumeLocation: newVidLocation})
+						}
+					}
+					vl.DoneGrowRequest()
+
+					if req.ErrCh != nil {
+						req.ErrCh <- err
+						close(req.ErrCh)
+					}
+
+					filter.Delete(req)
+				}()
+
+			} else {
+				glog.V(4).Infoln("discard volume grow request")
+			}
+		}
+	}()
+}
 
 func (ms *MasterServer) LookupVolume(ctx context.Context, req *master_pb.LookupVolumeRequest) (*master_pb.LookupVolumeResponse, error) {
 
-	if !ms.Topo.IsLeader() {
-		return nil, raft.NotLeaderError
-	}
-
 	resp := &master_pb.LookupVolumeResponse{}
-	volumeLocations := ms.lookupVolumeId(req.VolumeIds, req.Collection)
+	volumeLocations := ms.lookupVolumeId(req.VolumeOrFileIds, req.Collection)
 
-	for _, result := range volumeLocations {
-		var locations []*master_pb.Location
-		for _, loc := range result.Locations {
-			locations = append(locations, &master_pb.Location{
-				Url:       loc.Url,
-				PublicUrl: loc.PublicUrl,
+	for _, volumeOrFileId := range req.VolumeOrFileIds {
+		vid := volumeOrFileId
+		commaSep := strings.Index(vid, ",")
+		if commaSep > 0 {
+			vid = vid[0:commaSep]
+		}
+		if result, found := volumeLocations[vid]; found {
+			var locations []*master_pb.Location
+			for _, loc := range result.Locations {
+				locations = append(locations, &master_pb.Location{
+					Url:        loc.Url,
+					PublicUrl:  loc.PublicUrl,
+					DataCenter: loc.DataCenter,
+				})
+			}
+			var auth string
+			if commaSep > 0 { // this is a file id
+				auth = string(security.GenJwtForVolumeServer(ms.guard.SigningKey, ms.guard.ExpiresAfterSec, result.VolumeOrFileId))
+			}
+			resp.VolumeIdLocations = append(resp.VolumeIdLocations, &master_pb.LookupVolumeResponse_VolumeIdLocation{
+				VolumeOrFileId: result.VolumeOrFileId,
+				Locations:      locations,
+				Error:          result.Error,
+				Auth:           auth,
 			})
 		}
-		resp.VolumeIdLocations = append(resp.VolumeIdLocations, &master_pb.LookupVolumeResponse_VolumeIdLocation{
-			VolumeId:  result.VolumeId,
-			Locations: locations,
-			Error:     result.Error,
-		})
 	}
 
 	return resp, nil
@@ -61,43 +134,70 @@ func (ms *MasterServer) Assign(ctx context.Context, req *master_pb.AssignRequest
 	if err != nil {
 		return nil, err
 	}
+	diskType := types.ToDiskType(req.DiskType)
 
 	option := &topology.VolumeGrowOption{
 		Collection:         req.Collection,
 		ReplicaPlacement:   replicaPlacement,
 		Ttl:                ttl,
-		Prealloacte:        ms.preallocateSize,
+		DiskType:           diskType,
+		Preallocate:        ms.preallocateSize,
 		DataCenter:         req.DataCenter,
 		Rack:               req.Rack,
 		DataNode:           req.DataNode,
 		MemoryMapMaxSizeMb: req.MemoryMapMaxSizeMb,
 	}
 
-	if !ms.Topo.HasWritableVolume(option) {
-		if ms.Topo.FreeSpace() <= 0 {
-			return nil, fmt.Errorf("No free volumes left!")
+	vl := ms.Topo.GetVolumeLayout(option.Collection, option.ReplicaPlacement, option.Ttl, option.DiskType)
+
+	if !vl.HasGrowRequest() && vl.ShouldGrowVolumes(option) {
+		if ms.Topo.AvailableSpaceFor(option) <= 0 {
+			return nil, fmt.Errorf("no free volumes left for " + option.String())
 		}
-		ms.vgLock.Lock()
-		if !ms.Topo.HasWritableVolume(option) {
-			if _, err = ms.vg.AutomaticGrowByType(option, ms.grpcDialOption, ms.Topo, int(req.WritableVolumeCount)); err != nil {
-				ms.vgLock.Unlock()
-				return nil, fmt.Errorf("Cannot grow volume group! %v", err)
-			}
+		vl.AddGrowRequest()
+		ms.vgCh <- &topology.VolumeGrowRequest{
+			Option: option,
+			Count:  int(req.WritableVolumeCount),
 		}
-		ms.vgLock.Unlock()
-	}
-	fid, count, dn, err := ms.Topo.PickForWrite(req.Count, option)
-	if err != nil {
-		return nil, fmt.Errorf("%v", err)
 	}
 
-	return &master_pb.AssignResponse{
-		Fid:       fid,
-		Url:       dn.Url(),
-		PublicUrl: dn.PublicUrl,
-		Count:     count,
-		Auth:      string(security.GenJwt(ms.guard.SigningKey, ms.guard.ExpiresAfterSec, fid)),
-	}, nil
+	var (
+		lastErr    error
+		maxTimeout = time.Second * 10
+		startTime  = time.Now()
+	)
+
+	for time.Now().Sub(startTime) < maxTimeout {
+		fid, count, dnList, err := ms.Topo.PickForWrite(req.Count, option)
+		if err == nil {
+			dn := dnList.Head()
+			var replicas []*master_pb.Location
+			for _, r := range dnList.Rest() {
+				replicas = append(replicas, &master_pb.Location{
+					Url:        r.Url(),
+					PublicUrl:  r.PublicUrl,
+					GrpcPort:   uint32(r.GrpcPort),
+					DataCenter: r.GetDataCenterId(),
+				})
+			}
+			return &master_pb.AssignResponse{
+				Fid: fid,
+				Location: &master_pb.Location{
+					Url:        dn.Url(),
+					PublicUrl:  dn.PublicUrl,
+					GrpcPort:   uint32(dn.GrpcPort),
+					DataCenter: dn.GetDataCenterId(),
+				},
+				Count:    count,
+				Auth:     string(security.GenJwtForVolumeServer(ms.guard.SigningKey, ms.guard.ExpiresAfterSec, fid)),
+				Replicas: replicas,
+			}, nil
+		}
+		//glog.V(4).Infoln("waiting for volume growing...")
+		lastErr = err
+		time.Sleep(200 * time.Millisecond)
+	}
+	return nil, lastErr
 }
 
 func (ms *MasterServer) Statistics(ctx context.Context, req *master_pb.StatisticsRequest) (*master_pb.StatisticsResponse, error) {
@@ -118,11 +218,9 @@ func (ms *MasterServer) Statistics(ctx context.Context, req *master_pb.Statistic
 		return nil, err
 	}
 
-	volumeLayout := ms.Topo.GetVolumeLayout(req.Collection, replicaPlacement, ttl)
+	volumeLayout := ms.Topo.GetVolumeLayout(req.Collection, replicaPlacement, ttl, types.ToDiskType(req.DiskType))
 	stats := volumeLayout.Stats()
-
-	totalSize := ms.Topo.GetMaxVolumeCount() * int64(ms.option.VolumeSizeLimitMB) * 1024 * 1024
-
+	totalSize := ms.Topo.GetDiskUsages().GetMaxVolumeCount() * int64(ms.option.VolumeSizeLimitMB) * 1024 * 1024
 	resp := &master_pb.StatisticsResponse{
 		TotalSize: uint64(totalSize),
 		UsedSize:  stats.UsedSize,
@@ -166,8 +264,9 @@ func (ms *MasterServer) LookupEcVolume(ctx context.Context, req *master_pb.Looku
 		var locations []*master_pb.Location
 		for _, dn := range shardLocations {
 			locations = append(locations, &master_pb.Location{
-				Url:       string(dn.Id()),
-				PublicUrl: dn.PublicUrl,
+				Url:        string(dn.Id()),
+				PublicUrl:  dn.PublicUrl,
+				DataCenter: dn.GetDataCenterId(),
 			})
 		}
 		resp.ShardIdLocations = append(resp.ShardIdLocations, &master_pb.LookupEcVolumeResponse_EcShardIdLocation{
@@ -179,11 +278,53 @@ func (ms *MasterServer) LookupEcVolume(ctx context.Context, req *master_pb.Looku
 	return resp, nil
 }
 
-func (ms *MasterServer) GetMasterConfiguration(ctx context.Context, req *master_pb.GetMasterConfigurationRequest) (*master_pb.GetMasterConfigurationResponse, error) {
+func (ms *MasterServer) VacuumVolume(ctx context.Context, req *master_pb.VacuumVolumeRequest) (*master_pb.VacuumVolumeResponse, error) {
 
-	resp := &master_pb.GetMasterConfigurationResponse{
-		MetricsAddress:         ms.option.MetricsAddress,
-		MetricsIntervalSeconds: uint32(ms.option.MetricsIntervalSec),
+	if !ms.Topo.IsLeader() {
+		return nil, raft.NotLeaderError
+	}
+
+	resp := &master_pb.VacuumVolumeResponse{}
+
+	ms.Topo.Vacuum(ms.grpcDialOption, float64(req.GarbageThreshold), req.VolumeId, req.Collection, ms.preallocateSize)
+
+	return resp, nil
+}
+
+func (ms *MasterServer) DisableVacuum(ctx context.Context, req *master_pb.DisableVacuumRequest) (*master_pb.DisableVacuumResponse, error) {
+
+	ms.Topo.DisableVacuum()
+	resp := &master_pb.DisableVacuumResponse{}
+	return resp, nil
+}
+
+func (ms *MasterServer) EnableVacuum(ctx context.Context, req *master_pb.EnableVacuumRequest) (*master_pb.EnableVacuumResponse, error) {
+
+	ms.Topo.EnableVacuum()
+	resp := &master_pb.EnableVacuumResponse{}
+	return resp, nil
+}
+
+func (ms *MasterServer) VolumeMarkReadonly(ctx context.Context, req *master_pb.VolumeMarkReadonlyRequest) (*master_pb.VolumeMarkReadonlyResponse, error) {
+
+	if !ms.Topo.IsLeader() {
+		return nil, raft.NotLeaderError
+	}
+
+	resp := &master_pb.VolumeMarkReadonlyResponse{}
+
+	replicaPlacement, _ := super_block.NewReplicaPlacementFromByte(byte(req.ReplicaPlacement))
+	vl := ms.Topo.GetVolumeLayout(req.Collection, replicaPlacement, needle.LoadTTLFromUint32(req.Ttl), types.ToDiskType(req.DiskType))
+	dataNodes := ms.Topo.Lookup(req.Collection, needle.VolumeId(req.VolumeId))
+
+	for _, dn := range dataNodes {
+		if dn.Ip == req.Ip && dn.Port == int(req.Port) {
+			if req.IsReadonly {
+				vl.SetVolumeReadOnly(dn, needle.VolumeId(req.VolumeId))
+			} else {
+				vl.SetVolumeWritable(dn, needle.VolumeId(req.VolumeId))
+			}
+		}
 	}
 
 	return resp, nil

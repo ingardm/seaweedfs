@@ -2,18 +2,18 @@ package storage
 
 import (
 	"fmt"
-	"io/ioutil"
+	"golang.org/x/exp/slices"
+	"os"
 	"path"
 	"regexp"
-	"sort"
 	"strconv"
 
-	"github.com/chrislusf/seaweedfs/weed/storage/erasure_coding"
-	"github.com/chrislusf/seaweedfs/weed/storage/needle"
+	"github.com/seaweedfs/seaweedfs/weed/storage/erasure_coding"
+	"github.com/seaweedfs/seaweedfs/weed/storage/needle"
 )
 
 var (
-	re = regexp.MustCompile("\\.ec[0-9][0-9]")
+	re = regexp.MustCompile(`\.ec[0-9][0-9]`)
 )
 
 func (l *DiskLocation) FindEcVolume(vid needle.VolumeId) (*erasure_coding.EcVolume, bool) {
@@ -38,6 +38,22 @@ func (l *DiskLocation) DestroyEcVolume(vid needle.VolumeId) {
 	}
 }
 
+func (l *DiskLocation) CollectEcShards(vid needle.VolumeId, shardFileNames []string) (ecVolume *erasure_coding.EcVolume, found bool) {
+	l.ecVolumesLock.RLock()
+	defer l.ecVolumesLock.RUnlock()
+
+	ecVolume, found = l.ecVolumes[vid]
+	if !found {
+		return
+	}
+	for _, ecShard := range ecVolume.Shards {
+		if ecShard.ShardId < erasure_coding.ShardId(len(shardFileNames)) {
+			shardFileNames[ecShard.ShardId] = erasure_coding.EcShardFileName(ecVolume.Collection, l.Directory, int(ecVolume.VolumeId)) + erasure_coding.ToExt(int(ecShard.ShardId))
+		}
+	}
+	return
+}
+
 func (l *DiskLocation) FindEcShard(vid needle.VolumeId, shardId erasure_coding.ShardId) (*erasure_coding.EcVolumeShard, bool) {
 	l.ecVolumesLock.RLock()
 	defer l.ecVolumesLock.RUnlock()
@@ -56,15 +72,18 @@ func (l *DiskLocation) FindEcShard(vid needle.VolumeId, shardId erasure_coding.S
 
 func (l *DiskLocation) LoadEcShard(collection string, vid needle.VolumeId, shardId erasure_coding.ShardId) (err error) {
 
-	ecVolumeShard, err := erasure_coding.NewEcVolumeShard(l.Directory, collection, vid, shardId)
+	ecVolumeShard, err := erasure_coding.NewEcVolumeShard(l.DiskType, l.Directory, collection, vid, shardId)
 	if err != nil {
+		if err == os.ErrNotExist {
+			return os.ErrNotExist
+		}
 		return fmt.Errorf("failed to create ec shard %d.%d: %v", vid, shardId, err)
 	}
 	l.ecVolumesLock.Lock()
 	defer l.ecVolumesLock.Unlock()
 	ecVolume, found := l.ecVolumes[vid]
 	if !found {
-		ecVolume, err = erasure_coding.NewEcVolume(l.Directory, collection, vid)
+		ecVolume, err = erasure_coding.NewEcVolume(l.DiskType, l.Directory, l.IdxDirectory, collection, vid)
 		if err != nil {
 			return fmt.Errorf("failed to create ec volume %d: %v", vid, err)
 		}
@@ -114,18 +133,23 @@ func (l *DiskLocation) loadEcShards(shards []string, collection string, vid need
 
 func (l *DiskLocation) loadAllEcShards() (err error) {
 
-	fileInfos, err := ioutil.ReadDir(l.Directory)
+	dirEntries, err := os.ReadDir(l.Directory)
 	if err != nil {
 		return fmt.Errorf("load all ec shards in dir %s: %v", l.Directory, err)
 	}
-
-	sort.Slice(fileInfos, func(i, j int) bool {
-		return fileInfos[i].Name() < fileInfos[j].Name()
+	if l.IdxDirectory != l.Directory {
+		indexDirEntries, err := os.ReadDir(l.IdxDirectory)
+		if err != nil {
+			return fmt.Errorf("load all ec shards in dir %s: %v", l.IdxDirectory, err)
+		}
+		dirEntries = append(dirEntries, indexDirEntries...)
+	}
+	slices.SortFunc(dirEntries, func(a, b os.DirEntry) bool {
+		return a.Name() < b.Name()
 	})
-
 	var sameVolumeShards []string
 	var prevVolumeId needle.VolumeId
-	for _, fileInfo := range fileInfos {
+	for _, fileInfo := range dirEntries {
 		if fileInfo.IsDir() {
 			continue
 		}

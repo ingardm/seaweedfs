@@ -2,9 +2,26 @@ package needle_map
 
 import (
 	"fmt"
-	. "github.com/chrislusf/seaweedfs/weed/storage/types"
+	"github.com/seaweedfs/seaweedfs/weed/sequence"
+	. "github.com/seaweedfs/seaweedfs/weed/storage/types"
+	"log"
+	"os"
 	"testing"
 )
+
+func TestSnowflakeSequencer(t *testing.T) {
+	m := NewCompactMap()
+	seq, _ := sequence.NewSnowflakeSequencer("for_test", 1)
+
+	for i := 0; i < 200000; i++ {
+		id := seq.NextFileId(1)
+		oldOffset, oldSize := m.Set(NeedleId(id), ToOffset(8), 3000073)
+		if oldSize != 0 {
+			t.Errorf("id %d oldOffset %v oldSize %d", id, oldOffset, oldSize)
+		}
+	}
+
+}
 
 func TestOverflow2(t *testing.T) {
 	m := NewCompactMap()
@@ -49,7 +66,7 @@ func TestIssue52(t *testing.T) {
 func TestCompactMap(t *testing.T) {
 	m := NewCompactMap()
 	for i := uint32(0); i < 100*batch; i += 2 {
-		m.Set(NeedleId(i), ToOffset(int64(i)), i)
+		m.Set(NeedleId(i), ToOffset(int64(i)), Size(i))
 	}
 
 	for i := uint32(0); i < 100*batch; i += 37 {
@@ -57,7 +74,7 @@ func TestCompactMap(t *testing.T) {
 	}
 
 	for i := uint32(0); i < 10*batch; i += 3 {
-		m.Set(NeedleId(i), ToOffset(int64(i+11)), i+5)
+		m.Set(NeedleId(i), ToOffset(int64(i+11)), Size(i+5))
 	}
 
 	//	for i := uint32(0); i < 100; i++ {
@@ -72,15 +89,15 @@ func TestCompactMap(t *testing.T) {
 			if !ok {
 				t.Fatal("key", i, "missing!")
 			}
-			if v.Size != i+5 {
+			if v.Size != Size(i+5) {
 				t.Fatal("key", i, "size", v.Size)
 			}
 		} else if i%37 == 0 {
-			if ok && v.Size != TombstoneFileSize {
+			if ok && v.Size.IsValid() {
 				t.Fatal("key", i, "should have been deleted needle value", v)
 			}
 		} else if i%2 == 0 {
-			if v.Size != i {
+			if v.Size != Size(i) {
 				t.Fatal("key", i, "size", v.Size)
 			}
 		}
@@ -89,14 +106,14 @@ func TestCompactMap(t *testing.T) {
 	for i := uint32(10 * batch); i < 100*batch; i++ {
 		v, ok := m.Get(NeedleId(i))
 		if i%37 == 0 {
-			if ok && v.Size != TombstoneFileSize {
+			if ok && v.Size.IsValid() {
 				t.Fatal("key", i, "should have been deleted needle value", v)
 			}
 		} else if i%2 == 0 {
 			if v == nil {
 				t.Fatal("key", i, "missing")
 			}
-			if v.Size != i {
+			if v.Size != Size(i) {
 				t.Fatal("key", i, "size", v.Size)
 			}
 		}
@@ -129,8 +146,8 @@ func TestOverflow(t *testing.T) {
 
 	cs.deleteOverflowEntry(4)
 
-	if len(cs.overflow) != 4 {
-		t.Fatalf("expecting 4 entries now: %+v", cs.overflow)
+	if len(cs.overflow) != 5 {
+		t.Fatalf("expecting 5 entries now: %+v", cs.overflow)
 	}
 
 	_, x, _ := cs.findOverflowEntry(5)
@@ -146,7 +163,7 @@ func TestOverflow(t *testing.T) {
 	cs.deleteOverflowEntry(1)
 
 	for i, x := range cs.overflow {
-		println("overflow[", i, "]:", x.Key)
+		println("overflow[", i, "]:", x.Key, "size", x.Size)
 	}
 	println()
 
@@ -163,4 +180,41 @@ func TestOverflow(t *testing.T) {
 	}
 	println()
 
+}
+
+func TestCompactSection_Get(t *testing.T) {
+	var maps []*CompactMap
+	totalRowCount := uint64(0)
+	indexFile, ie := os.OpenFile("../../../test/data/sample.idx",
+		os.O_RDWR|os.O_RDONLY, 0644)
+	defer indexFile.Close()
+	if ie != nil {
+		log.Fatalln(ie)
+	}
+
+	m, rowCount := loadNewNeedleMap(indexFile)
+	maps = append(maps, m)
+	totalRowCount += rowCount
+	m.Set(1574318345753513987, ToOffset(10002), 10002)
+	nv,ok := m.Get(1574318345753513987)
+	if ok {
+		t.Log(uint64(nv.Key))
+	}
+
+	nv1, ok := m.Get(1574318350048481283)
+	if ok {
+		t.Error(uint64(nv1.Key))
+	}
+
+	m.Set(1574318350048481283, ToOffset(10002), 10002)
+	nv2,ok1 := m.Get(1574318350048481283)
+	if ok1 {
+		t.Log(uint64(nv2.Key))
+	}
+
+	m.Delete(nv2.Key)
+	nv3,has := m.Get(nv2.Key)
+	if has && nv3.Size > 0 {
+		t.Error(uint64(nv3.Size))
+	}
 }

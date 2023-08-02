@@ -1,20 +1,28 @@
 package topology
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
 	"sync"
+	"time"
 
-	"github.com/chrislusf/raft"
+	"github.com/seaweedfs/seaweedfs/weed/pb"
+	"github.com/seaweedfs/seaweedfs/weed/storage/types"
 
-	"github.com/chrislusf/seaweedfs/weed/glog"
-	"github.com/chrislusf/seaweedfs/weed/pb/master_pb"
-	"github.com/chrislusf/seaweedfs/weed/sequence"
-	"github.com/chrislusf/seaweedfs/weed/storage"
-	"github.com/chrislusf/seaweedfs/weed/storage/needle"
-	"github.com/chrislusf/seaweedfs/weed/storage/super_block"
-	"github.com/chrislusf/seaweedfs/weed/util"
+	backoff "github.com/cenkalti/backoff/v4"
+
+	hashicorpRaft "github.com/hashicorp/raft"
+	"github.com/seaweedfs/raft"
+
+	"github.com/seaweedfs/seaweedfs/weed/glog"
+	"github.com/seaweedfs/seaweedfs/weed/pb/master_pb"
+	"github.com/seaweedfs/seaweedfs/weed/sequence"
+	"github.com/seaweedfs/seaweedfs/weed/storage"
+	"github.com/seaweedfs/seaweedfs/weed/storage/needle"
+	"github.com/seaweedfs/seaweedfs/weed/storage/super_block"
+	"github.com/seaweedfs/seaweedfs/weed/util"
 )
 
 type Topology struct {
@@ -29,14 +37,20 @@ type Topology struct {
 
 	volumeSizeLimit  uint64
 	replicationAsMin bool
+	isDisableVacuum  bool
 
 	Sequence sequence.Sequencer
 
-	chanFullVolumes chan storage.VolumeInfo
+	chanFullVolumes    chan storage.VolumeInfo
+	chanCrowdedVolumes chan storage.VolumeInfo
 
 	Configuration *Configuration
 
-	RaftServer raft.Server
+	RaftServer           raft.Server
+	RaftServerAccessLock sync.RWMutex
+	HashicorpRaft        *hashicorpRaft.Raft
+	UuidAccessLock       sync.RWMutex
+	UuidMap              map[string][]string
 }
 
 func NewTopology(id string, seq sequence.Sequencer, volumeSizeLimit uint64, pulse int, replicationAsMin bool) *Topology {
@@ -44,6 +58,7 @@ func NewTopology(id string, seq sequence.Sequencer, volumeSizeLimit uint64, puls
 	t.id = NodeId(id)
 	t.nodeType = "Topology"
 	t.NodeImpl.value = t
+	t.diskUsages = newDiskUsages()
 	t.children = make(map[NodeId]Node)
 	t.collectionMap = util.NewConcurrentReadMap()
 	t.ecShardMap = make(map[needle.VolumeId]*EcShardLocations)
@@ -54,42 +69,93 @@ func NewTopology(id string, seq sequence.Sequencer, volumeSizeLimit uint64, puls
 	t.Sequence = seq
 
 	t.chanFullVolumes = make(chan storage.VolumeInfo)
+	t.chanCrowdedVolumes = make(chan storage.VolumeInfo)
 
 	t.Configuration = &Configuration{}
 
 	return t
 }
 
+func (t *Topology) IsChildLocked() (bool, error) {
+	if t.IsLocked() {
+		return true, errors.New("topology is locked")
+	}
+	for _, dcNode := range t.Children() {
+		if dcNode.IsLocked() {
+			return true, fmt.Errorf("topology child %s is locked", dcNode.String())
+		}
+		for _, rackNode := range dcNode.Children() {
+			if rackNode.IsLocked() {
+				return true, fmt.Errorf("dc %s child %s is locked", dcNode.String(), rackNode.String())
+			}
+			for _, dataNode := range rackNode.Children() {
+				if dataNode.IsLocked() {
+					return true, fmt.Errorf("rack %s child %s is locked", rackNode.String(), dataNode.Id())
+				}
+			}
+		}
+	}
+	return false, nil
+}
+
 func (t *Topology) IsLeader() bool {
+	t.RaftServerAccessLock.RLock()
+	defer t.RaftServerAccessLock.RUnlock()
+
 	if t.RaftServer != nil {
 		if t.RaftServer.State() == raft.Leader {
 			return true
 		}
-		if t.RaftServer.Leader() == "" {
+		if leader, err := t.Leader(); err == nil {
+			if pb.ServerAddress(t.RaftServer.Name()) == leader {
+				return true
+			}
+		}
+	} else if t.HashicorpRaft != nil {
+		if t.HashicorpRaft.State() == hashicorpRaft.Leader {
 			return true
 		}
 	}
 	return false
 }
 
-func (t *Topology) Leader() (string, error) {
-	l := ""
+func (t *Topology) Leader() (l pb.ServerAddress, err error) {
+	exponentialBackoff := backoff.NewExponentialBackOff()
+	exponentialBackoff.InitialInterval = 100 * time.Millisecond
+	exponentialBackoff.MaxElapsedTime = 20 * time.Second
+	leaderNotSelected := errors.New("leader not selected yet")
+	l, err = backoff.RetryWithData(
+		func() (l pb.ServerAddress, err error) {
+			l, err = t.MaybeLeader()
+			if err == nil && l == "" {
+				err = leaderNotSelected
+			}
+			return l, err
+		},
+		exponentialBackoff)
+	if err == leaderNotSelected {
+		l = ""
+	}
+	return l, err
+}
+
+func (t *Topology) MaybeLeader() (l pb.ServerAddress, err error) {
+	t.RaftServerAccessLock.RLock()
+	defer t.RaftServerAccessLock.RUnlock()
+
 	if t.RaftServer != nil {
-		l = t.RaftServer.Leader()
+		l = pb.ServerAddress(t.RaftServer.Leader())
+	} else if t.HashicorpRaft != nil {
+		l = pb.ServerAddress(t.HashicorpRaft.Leader())
 	} else {
-		return "", errors.New("Raft Server not ready yet!")
+		err = errors.New("Raft Server not ready yet!")
 	}
 
-	if l == "" {
-		// We are a single node cluster, we are the leader
-		return t.RaftServer.Name(), nil
-	}
-
-	return l, nil
+	return
 }
 
 func (t *Topology) Lookup(collection string, vid needle.VolumeId) (dataNodes []*DataNode) {
-	//maybe an issue if lots of collections?
+	// maybe an issue if lots of collections?
 	if collection == "" {
 		for _, c := range t.collectionMap.Items() {
 			if list := c.(*Collection).Lookup(vid); list != nil {
@@ -115,19 +181,35 @@ func (t *Topology) Lookup(collection string, vid needle.VolumeId) (dataNodes []*
 func (t *Topology) NextVolumeId() (needle.VolumeId, error) {
 	vid := t.GetMaxVolumeId()
 	next := vid.Next()
-	if _, err := t.RaftServer.Do(NewMaxVolumeIdCommand(next)); err != nil {
-		return 0, err
+
+	t.RaftServerAccessLock.RLock()
+	defer t.RaftServerAccessLock.RUnlock()
+
+	if t.RaftServer != nil {
+		if _, err := t.RaftServer.Do(NewMaxVolumeIdCommand(next)); err != nil {
+			return 0, err
+		}
+	} else if t.HashicorpRaft != nil {
+		b, err := json.Marshal(NewMaxVolumeIdCommand(next))
+		if err != nil {
+			return 0, fmt.Errorf("failed marshal NewMaxVolumeIdCommand: %+v", err)
+		}
+		if future := t.HashicorpRaft.Apply(b, time.Second); future.Error() != nil {
+			return 0, future.Error()
+		}
 	}
 	return next, nil
 }
 
+// deprecated
 func (t *Topology) HasWritableVolume(option *VolumeGrowOption) bool {
-	vl := t.GetVolumeLayout(option.Collection, option.ReplicaPlacement, option.Ttl)
-	return vl.GetActiveVolumeCount(option) > 0
+	vl := t.GetVolumeLayout(option.Collection, option.ReplicaPlacement, option.Ttl, option.DiskType)
+	active, _ := vl.GetActiveVolumeCount(option)
+	return active > 0
 }
 
-func (t *Topology) PickForWrite(count uint64, option *VolumeGrowOption) (string, uint64, *DataNode, error) {
-	vid, count, datanodes, err := t.GetVolumeLayout(option.Collection, option.ReplicaPlacement, option.Ttl).PickForWrite(count, option)
+func (t *Topology) PickForWrite(count uint64, option *VolumeGrowOption) (string, uint64, *VolumeLocationList, error) {
+	vid, count, datanodes, err := t.GetVolumeLayout(option.Collection, option.ReplicaPlacement, option.Ttl, option.DiskType).PickForWrite(count, option)
 	if err != nil {
 		return "", 0, nil, fmt.Errorf("failed to find writable volumes for collection:%s replication:%s ttl:%s error: %v", option.Collection, option.ReplicaPlacement.String(), option.Ttl.String(), err)
 	}
@@ -135,13 +217,13 @@ func (t *Topology) PickForWrite(count uint64, option *VolumeGrowOption) (string,
 		return "", 0, nil, fmt.Errorf("no writable volumes available for collection:%s replication:%s ttl:%s", option.Collection, option.ReplicaPlacement.String(), option.Ttl.String())
 	}
 	fileId := t.Sequence.NextFileId(count)
-	return needle.NewFileId(*vid, fileId, rand.Uint32()).String(), count, datanodes.Head(), nil
+	return needle.NewFileId(*vid, fileId, rand.Uint32()).String(), count, datanodes, nil
 }
 
-func (t *Topology) GetVolumeLayout(collectionName string, rp *super_block.ReplicaPlacement, ttl *needle.TTL) *VolumeLayout {
+func (t *Topology) GetVolumeLayout(collectionName string, rp *super_block.ReplicaPlacement, ttl *needle.TTL, diskType types.DiskType) *VolumeLayout {
 	return t.collectionMap.Get(collectionName, func() interface{} {
 		return NewCollection(collectionName, t.volumeSizeLimit, t.replicationAsMin)
-	}).(*Collection).GetOrCreateVolumeLayout(rp, ttl)
+	}).(*Collection).GetOrCreateVolumeLayout(rp, ttl, diskType)
 }
 
 func (t *Topology) ListCollections(includeNormalVolumes, includeEcVolumes bool) (ret []string) {
@@ -177,27 +259,44 @@ func (t *Topology) DeleteCollection(collectionName string) {
 	t.collectionMap.Delete(collectionName)
 }
 
+func (t *Topology) DeleteLayout(collectionName string, rp *super_block.ReplicaPlacement, ttl *needle.TTL, diskType types.DiskType) {
+	collection, found := t.FindCollection(collectionName)
+	if !found {
+		return
+	}
+	collection.DeleteVolumeLayout(rp, ttl, diskType)
+	if len(collection.storageType2VolumeLayout.Items()) == 0 {
+		t.DeleteCollection(collectionName)
+	}
+}
+
 func (t *Topology) RegisterVolumeLayout(v storage.VolumeInfo, dn *DataNode) {
-	t.GetVolumeLayout(v.Collection, v.ReplicaPlacement, v.Ttl).RegisterVolume(&v, dn)
+	diskType := types.ToDiskType(v.DiskType)
+	vl := t.GetVolumeLayout(v.Collection, v.ReplicaPlacement, v.Ttl, diskType)
+	vl.RegisterVolume(&v, dn)
+	vl.EnsureCorrectWritables(&v)
 }
 func (t *Topology) UnRegisterVolumeLayout(v storage.VolumeInfo, dn *DataNode) {
-	glog.Infof("removing volume info:%+v", v)
-	volumeLayout := t.GetVolumeLayout(v.Collection, v.ReplicaPlacement, v.Ttl)
+	glog.Infof("removing volume info: %+v from %v", v, dn.id)
+	diskType := types.ToDiskType(v.DiskType)
+	volumeLayout := t.GetVolumeLayout(v.Collection, v.ReplicaPlacement, v.Ttl, diskType)
 	volumeLayout.UnRegisterVolume(&v, dn)
 	if volumeLayout.isEmpty() {
-		t.DeleteCollection(v.Collection)
+		t.DeleteLayout(v.Collection, v.ReplicaPlacement, v.Ttl, diskType)
 	}
 }
 
 func (t *Topology) GetOrCreateDataCenter(dcName string) *DataCenter {
-	for _, c := range t.Children() {
+	t.Lock()
+	defer t.Unlock()
+	for _, c := range t.children {
 		dc := c.(*DataCenter)
 		if string(dc.Id()) == dcName {
 			return dc
 		}
 	}
 	dc := NewDataCenter(dcName)
-	t.LinkChildNode(dc)
+	t.doLinkChildNode(dc)
 	return dc
 }
 
@@ -221,8 +320,9 @@ func (t *Topology) SyncDataNodeRegistration(volumes []*master_pb.VolumeInformati
 		t.UnRegisterVolumeLayout(v, dn)
 	}
 	for _, v := range changedVolumes {
-		vl := t.GetVolumeLayout(v.Collection, v.ReplicaPlacement, v.Ttl)
-		vl.ensureCorrectWritables(&v)
+		diskType := types.ToDiskType(v.DiskType)
+		vl := t.GetVolumeLayout(v.Collection, v.ReplicaPlacement, v.Ttl, diskType)
+		vl.EnsureCorrectWritables(&v)
 	}
 	return
 }
@@ -255,4 +355,25 @@ func (t *Topology) IncrementalSyncDataNodeRegistration(newVolumes, deletedVolume
 	}
 
 	return
+}
+
+func (t *Topology) DataNodeRegistration(dcName, rackName string, dn *DataNode) {
+	if dn.Parent() != nil {
+		return
+	}
+	// registration to topo
+	dc := t.GetOrCreateDataCenter(dcName)
+	rack := dc.GetOrCreateRack(rackName)
+	rack.LinkChildNode(dn)
+	glog.Infof("[%s] reLink To topo  ", dn.Id())
+}
+
+func (t *Topology) DisableVacuum() {
+	glog.V(0).Infof("DisableVacuum")
+	t.isDisableVacuum = true
+}
+
+func (t *Topology) EnableVacuum() {
+	glog.V(0).Infof("EnableVacuum")
+	t.isDisableVacuum = false
 }

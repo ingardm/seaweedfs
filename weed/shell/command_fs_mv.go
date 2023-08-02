@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/chrislusf/seaweedfs/weed/pb/filer_pb"
-	"github.com/chrislusf/seaweedfs/weed/util"
+	"github.com/seaweedfs/seaweedfs/weed/pb/filer_pb"
+	"github.com/seaweedfs/seaweedfs/weed/util"
 )
 
 func init() {
@@ -36,6 +36,10 @@ func (c *commandFsMv) Help() string {
 
 func (c *commandFsMv) Do(args []string, commandEnv *CommandEnv, writer io.Writer) (err error) {
 
+	if len(args) != 2 {
+		return fmt.Errorf("need to have 2 arguments")
+	}
+
 	sourcePath, err := commandEnv.parseUrl(args[0])
 	if err != nil {
 		return err
@@ -50,7 +54,7 @@ func (c *commandFsMv) Do(args []string, commandEnv *CommandEnv, writer io.Writer
 
 	destinationDir, destinationName := util.FullPath(destinationPath).DirAndName()
 
-	return commandEnv.WithFilerClient(func(client filer_pb.SeaweedFilerClient) error {
+	return commandEnv.WithFilerClient(false, func(client filer_pb.SeaweedFilerClient) error {
 
 		// collect destination entry info
 		destinationRequest := &filer_pb.LookupDirectoryEntryRequest{

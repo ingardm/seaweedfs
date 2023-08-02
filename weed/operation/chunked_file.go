@@ -5,15 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"sort"
 	"sync"
 
 	"google.golang.org/grpc"
 
-	"github.com/chrislusf/seaweedfs/weed/glog"
-	"github.com/chrislusf/seaweedfs/weed/util"
+	"github.com/seaweedfs/seaweedfs/weed/glog"
+	"github.com/seaweedfs/seaweedfs/weed/pb"
+	"github.com/seaweedfs/seaweedfs/weed/util"
 )
 
 var (
@@ -40,24 +40,25 @@ type ChunkManifest struct {
 
 // seekable chunked file reader
 type ChunkedFileReader struct {
-	totalSize int64
-	chunkList []*ChunkInfo
-	master    string
-	pos       int64
-	pr        *io.PipeReader
-	pw        *io.PipeWriter
-	mutex     sync.Mutex
+	totalSize      int64
+	chunkList      []*ChunkInfo
+	master         pb.ServerAddress
+	pos            int64
+	pr             *io.PipeReader
+	pw             *io.PipeWriter
+	mutex          sync.Mutex
+	grpcDialOption grpc.DialOption
 }
 
 func (s ChunkList) Len() int           { return len(s) }
 func (s ChunkList) Less(i, j int) bool { return s[i].Offset < s[j].Offset }
 func (s ChunkList) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 
-func LoadChunkManifest(buffer []byte, isGzipped bool) (*ChunkManifest, error) {
-	if isGzipped {
+func LoadChunkManifest(buffer []byte, isCompressed bool) (*ChunkManifest, error) {
+	if isCompressed {
 		var err error
-		if buffer, err = util.UnGzipData(buffer); err != nil {
-			return nil, err
+		if buffer, err = util.DecompressData(buffer); err != nil {
+			glog.V(0).Infof("fail to decompress chunk manifest: %v", err)
 		}
 	}
 	cm := ChunkManifest{}
@@ -72,12 +73,12 @@ func (cm *ChunkManifest) Marshal() ([]byte, error) {
 	return json.Marshal(cm)
 }
 
-func (cm *ChunkManifest) DeleteChunks(master string, usePublicUrl bool, grpcDialOption grpc.DialOption) error {
+func (cm *ChunkManifest) DeleteChunks(masterFn GetMasterFn, usePublicUrl bool, grpcDialOption grpc.DialOption) error {
 	var fileIds []string
 	for _, ci := range cm.Chunks {
 		fileIds = append(fileIds, ci.Fid)
 	}
-	results, err := DeleteFiles(master, usePublicUrl, grpcDialOption, fileIds)
+	results, err := DeleteFiles(masterFn, usePublicUrl, grpcDialOption, fileIds)
 	if err != nil {
 		glog.V(0).Infof("delete %+v: %v", fileIds, err)
 		return fmt.Errorf("chunk delete: %v", err)
@@ -92,7 +93,7 @@ func (cm *ChunkManifest) DeleteChunks(master string, usePublicUrl bool, grpcDial
 	return nil
 }
 
-func readChunkNeedle(fileUrl string, w io.Writer, offset int64) (written int64, e error) {
+func readChunkNeedle(fileUrl string, w io.Writer, offset int64, jwt string) (written int64, e error) {
 	req, err := http.NewRequest("GET", fileUrl, nil)
 	if err != nil {
 		return written, err
@@ -105,10 +106,7 @@ func readChunkNeedle(fileUrl string, w io.Writer, offset int64) (written int64, 
 	if err != nil {
 		return written, err
 	}
-	defer func() {
-		io.Copy(ioutil.Discard, resp.Body)
-		resp.Body.Close()
-	}()
+	defer util.CloseResponse(resp)
 
 	switch resp.StatusCode {
 	case http.StatusRequestedRangeNotSatisfiable:
@@ -126,16 +124,17 @@ func readChunkNeedle(fileUrl string, w io.Writer, offset int64) (written int64, 
 	return io.Copy(w, resp.Body)
 }
 
-func NewChunkedFileReader(chunkList []*ChunkInfo, master string) *ChunkedFileReader {
+func NewChunkedFileReader(chunkList []*ChunkInfo, master pb.ServerAddress, grpcDialOption grpc.DialOption) *ChunkedFileReader {
 	var totalSize int64
 	for _, chunk := range chunkList {
 		totalSize += chunk.Size
 	}
 	sort.Sort(ChunkList(chunkList))
 	return &ChunkedFileReader{
-		totalSize: totalSize,
-		chunkList: chunkList,
-		master:    master,
+		totalSize:      totalSize,
+		chunkList:      chunkList,
+		master:         master,
+		grpcDialOption: grpcDialOption,
 	}
 }
 
@@ -174,11 +173,13 @@ func (cf *ChunkedFileReader) WriteTo(w io.Writer) (n int64, err error) {
 	for ; chunkIndex < len(cf.chunkList); chunkIndex++ {
 		ci := cf.chunkList[chunkIndex]
 		// if we need read date from local volume server first?
-		fileUrl, lookupError := LookupFileId(cf.master, ci.Fid)
+		fileUrl, jwt, lookupError := LookupFileId(func() pb.ServerAddress {
+			return cf.master
+		}, cf.grpcDialOption, ci.Fid)
 		if lookupError != nil {
 			return n, lookupError
 		}
-		if wn, e := readChunkNeedle(fileUrl, w, chunkStartOffset); e != nil {
+		if wn, e := readChunkNeedle(fileUrl, w, chunkStartOffset, jwt); e != nil {
 			return n, e
 		} else {
 			n += wn

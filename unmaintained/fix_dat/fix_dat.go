@@ -8,12 +8,12 @@ import (
 	"path"
 	"strconv"
 
-	"github.com/chrislusf/seaweedfs/weed/glog"
-	"github.com/chrislusf/seaweedfs/weed/storage/backend"
-	"github.com/chrislusf/seaweedfs/weed/storage/needle"
-	"github.com/chrislusf/seaweedfs/weed/storage/super_block"
-	"github.com/chrislusf/seaweedfs/weed/storage/types"
-	"github.com/chrislusf/seaweedfs/weed/util"
+	"github.com/seaweedfs/seaweedfs/weed/glog"
+	"github.com/seaweedfs/seaweedfs/weed/storage/backend"
+	"github.com/seaweedfs/seaweedfs/weed/storage/needle"
+	"github.com/seaweedfs/seaweedfs/weed/storage/super_block"
+	"github.com/seaweedfs/seaweedfs/weed/storage/types"
+	"github.com/seaweedfs/seaweedfs/weed/util"
 )
 
 var (
@@ -24,7 +24,7 @@ var (
 
 /*
 This is to resolve an one-time issue that caused inconsistency with .dat and .idx files.
-In this case, the .dat file contains all data, but some of deletion caused incorrect offset.
+In this case, the .dat file contains all data, but some deletion caused incorrect offset.
 The .idx has all correct offsets.
 
 1. fix the .dat file, a new .dat_fixed file will be generated.
@@ -98,7 +98,7 @@ func iterateEntries(datBackend backend.BackendStorageFile, idxFile *os.File, vis
 		// parse index file entry
 		key := util.BytesToUint64(bytes[0:8])
 		offsetFromIndex := util.BytesToUint32(bytes[8:12])
-		sizeFromIndex := util.BytesToUint32(bytes[12:16])
+		sizeFromIndex := types.BytesToSize(bytes[12:16])
 		count, _ = idxFile.ReadAt(bytes, readerOffset)
 		readerOffset += int64(count)
 
@@ -123,7 +123,7 @@ func iterateEntries(datBackend backend.BackendStorageFile, idxFile *os.File, vis
 			}
 		}()
 
-		if n.Size <= n.DataSize {
+		if n.Size <= types.Size(n.DataSize) {
 			continue
 		}
 		visitNeedle(n, offset)

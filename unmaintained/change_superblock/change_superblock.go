@@ -7,10 +7,10 @@ import (
 	"path"
 	"strconv"
 
-	"github.com/chrislusf/seaweedfs/weed/glog"
-	"github.com/chrislusf/seaweedfs/weed/storage/backend"
-	"github.com/chrislusf/seaweedfs/weed/storage/needle"
-	"github.com/chrislusf/seaweedfs/weed/storage/super_block"
+	"github.com/seaweedfs/seaweedfs/weed/glog"
+	"github.com/seaweedfs/seaweedfs/weed/storage/backend"
+	"github.com/seaweedfs/seaweedfs/weed/storage/needle"
+	"github.com/seaweedfs/seaweedfs/weed/storage/super_block"
 )
 
 var (
@@ -92,7 +92,7 @@ func main() {
 
 		header := superBlock.Bytes()
 
-		if n, e := datFile.WriteAt(header, 0); n == 0 || e != nil {
+		if n, e := datBackend.WriteAt(header, 0); n == 0 || e != nil {
 			glog.Fatalf("cannot write super block: %v", e)
 		}
 

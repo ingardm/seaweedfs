@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/chrislusf/seaweedfs/weed/pb/master_pb"
-	"github.com/chrislusf/seaweedfs/weed/storage/needle"
+	"github.com/seaweedfs/seaweedfs/weed/pb/master_pb"
+	"github.com/seaweedfs/seaweedfs/weed/storage/needle"
 )
 
 func TestCommandEcDistribution(t *testing.T) {
@@ -126,7 +126,8 @@ func TestCommandEcBalanceVolumeEvenButRackUneven(t *testing.T) {
 func newEcNode(dc string, rack string, dataNodeId string, freeEcSlot int) *EcNode {
 	return &EcNode{
 		info: &master_pb.DataNodeInfo{
-			Id: dataNodeId,
+			Id:        dataNodeId,
+			DiskInfos: make(map[string]*master_pb.DiskInfo),
 		},
 		dc:         dc,
 		rack:       RackId(rack),

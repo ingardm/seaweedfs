@@ -1,18 +1,17 @@
 package util
 
 import (
-	"bytes"
 	"compress/gzip"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/seaweedfs/seaweedfs/weed/util/mem"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/url"
 	"strings"
 
-	"github.com/chrislusf/seaweedfs/weed/glog"
+	"github.com/seaweedfs/seaweedfs/weed/glog"
 )
 
 var (
@@ -22,27 +21,12 @@ var (
 
 func init() {
 	Transport = &http.Transport{
+		MaxIdleConns:        1024,
 		MaxIdleConnsPerHost: 1024,
 	}
 	client = &http.Client{
 		Transport: Transport,
 	}
-}
-
-func PostBytes(url string, body []byte) ([]byte, error) {
-	r, err := client.Post(url, "", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("Post to %s: %v", url, err)
-	}
-	defer r.Body.Close()
-	b, err := ioutil.ReadAll(r.Body)
-	if err != nil {
-		return nil, fmt.Errorf("Read response body: %v", err)
-	}
-	if r.StatusCode >= 400 {
-		return nil, fmt.Errorf("%s: %s", url, r.Status)
-	}
-	return b, nil
 }
 
 func Post(url string, values url.Values) ([]byte, error) {
@@ -51,7 +35,7 @@ func Post(url string, values url.Values) ([]byte, error) {
 		return nil, err
 	}
 	defer r.Body.Close()
-	b, err := ioutil.ReadAll(r.Body)
+	b, err := io.ReadAll(r.Body)
 	if r.StatusCode >= 400 {
 		if err != nil {
 			return nil, fmt.Errorf("%s: %d - %s", url, r.StatusCode, string(b))
@@ -65,22 +49,37 @@ func Post(url string, values url.Values) ([]byte, error) {
 	return b, nil
 }
 
-//	github.com/chrislusf/seaweedfs/unmaintained/repeated_vacuum/repeated_vacuum.go
-//	may need increasing http.Client.Timeout
-func Get(url string) ([]byte, error) {
-	r, err := client.Get(url)
+// github.com/seaweedfs/seaweedfs/unmaintained/repeated_vacuum/repeated_vacuum.go
+// may need increasing http.Client.Timeout
+func Get(url string) ([]byte, bool, error) {
+
+	request, err := http.NewRequest("GET", url, nil)
+	request.Header.Add("Accept-Encoding", "gzip")
+
+	response, err := client.Do(request)
 	if err != nil {
-		return nil, err
+		return nil, true, err
 	}
-	defer r.Body.Close()
-	b, err := ioutil.ReadAll(r.Body)
-	if r.StatusCode >= 400 {
-		return nil, fmt.Errorf("%s: %s", url, r.Status)
+	defer CloseResponse(response)
+
+	var reader io.ReadCloser
+	switch response.Header.Get("Content-Encoding") {
+	case "gzip":
+		reader, err = gzip.NewReader(response.Body)
+		defer reader.Close()
+	default:
+		reader = response.Body
+	}
+
+	b, err := io.ReadAll(reader)
+	if response.StatusCode >= 400 {
+		retryable := response.StatusCode >= 500
+		return nil, retryable, fmt.Errorf("%s: %s", url, response.Status)
 	}
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return b, nil
+	return b, false, nil
 }
 
 func Head(url string) (http.Header, error) {
@@ -108,7 +107,7 @@ func Delete(url string, jwt string) error {
 		return e
 	}
 	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err
 	}
@@ -123,6 +122,27 @@ func Delete(url string, jwt string) error {
 		}
 	}
 	return errors.New(string(body))
+}
+
+func DeleteProxied(url string, jwt string) (body []byte, httpStatus int, err error) {
+	req, err := http.NewRequest("DELETE", url, nil)
+	if jwt != "" {
+		req.Header.Set("Authorization", "BEARER "+string(jwt))
+	}
+	if err != nil {
+		return
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	body, err = io.ReadAll(resp.Body)
+	if err != nil {
+		return
+	}
+	httpStatus = resp.StatusCode
+	return
 }
 
 func GetBufferStream(url string, values url.Values, allocatedBytes []byte, eachBuffer func([]byte)) error {
@@ -160,8 +180,17 @@ func GetUrlStream(url string, values url.Values, readFn func(io.Reader) error) e
 	return readFn(r.Body)
 }
 
-func DownloadFile(fileUrl string) (filename string, header http.Header, rc io.ReadCloser, e error) {
-	response, err := client.Get(fileUrl)
+func DownloadFile(fileUrl string, jwt string) (filename string, header http.Header, resp *http.Response, e error) {
+	req, err := http.NewRequest("GET", fileUrl, nil)
+	if err != nil {
+		return "", nil, nil, err
+	}
+
+	if len(jwt) > 0 {
+		req.Header.Set("Authorization", "BEARER "+jwt)
+	}
+
+	response, err := client.Do(req)
 	if err != nil {
 		return "", nil, nil, err
 	}
@@ -174,7 +203,7 @@ func DownloadFile(fileUrl string) (filename string, header http.Header, rc io.Re
 			filename = strings.Trim(filename, "\"")
 		}
 	}
-	rc = response.Body
+	resp = response
 	return
 }
 
@@ -189,11 +218,11 @@ func NormalizeUrl(url string) string {
 	return "http://" + url
 }
 
-func ReadUrl(fileUrl string, cipherKey []byte, isGzipped bool, isFullChunk bool, offset int64, size int, buf []byte) (int64, error) {
+func ReadUrl(fileUrl string, cipherKey []byte, isContentCompressed bool, isFullChunk bool, offset int64, size int, buf []byte) (int64, error) {
 
 	if cipherKey != nil {
 		var n int
-		err := readEncryptedUrl(fileUrl, cipherKey, isGzipped, isFullChunk, offset, size, func(data []byte) {
+		_, err := readEncryptedUrl(fileUrl, cipherKey, isContentCompressed, isFullChunk, offset, size, func(data []byte) {
 			n = copy(buf, data)
 		})
 		return int64(n), err
@@ -213,8 +242,8 @@ func ReadUrl(fileUrl string, cipherKey []byte, isGzipped bool, isFullChunk bool,
 	if err != nil {
 		return 0, err
 	}
+	defer CloseResponse(r)
 
-	defer r.Body.Close()
 	if r.StatusCode >= 400 {
 		return 0, fmt.Errorf("%s: %s", fileUrl, r.Status)
 	}
@@ -251,103 +280,161 @@ func ReadUrl(fileUrl string, cipherKey []byte, isGzipped bool, isFullChunk bool,
 		}
 	}
 	// drains the response body to avoid memory leak
-	data, _ := ioutil.ReadAll(reader)
+	data, _ := io.ReadAll(reader)
 	if len(data) != 0 {
 		glog.V(1).Infof("%s reader has remaining %d bytes", contentEncoding, len(data))
 	}
 	return n, err
 }
 
-func ReadUrlAsStream(fileUrl string, cipherKey []byte, isContentGzipped bool, isFullChunk bool, offset int64, size int, fn func(data []byte)) error {
-
+func ReadUrlAsStream(fileUrl string, cipherKey []byte, isContentGzipped bool, isFullChunk bool, offset int64, size int, fn func(data []byte)) (retryable bool, err error) {
 	if cipherKey != nil {
 		return readEncryptedUrl(fileUrl, cipherKey, isContentGzipped, isFullChunk, offset, size, fn)
 	}
 
 	req, err := http.NewRequest("GET", fileUrl, nil)
 	if err != nil {
-		return err
+		return false, err
 	}
 
-	if !isFullChunk {
+	if isFullChunk {
+		req.Header.Add("Accept-Encoding", "gzip")
+	} else {
 		req.Header.Add("Range", fmt.Sprintf("bytes=%d-%d", offset, offset+int64(size)-1))
 	}
 
 	r, err := client.Do(req)
 	if err != nil {
-		return err
+		return true, err
 	}
 	defer CloseResponse(r)
 	if r.StatusCode >= 400 {
-		return fmt.Errorf("%s: %s", fileUrl, r.Status)
+		retryable = r.StatusCode == http.StatusNotFound || r.StatusCode >= 500
+		return retryable, fmt.Errorf("%s: %s", fileUrl, r.Status)
+	}
+
+	var reader io.ReadCloser
+	contentEncoding := r.Header.Get("Content-Encoding")
+	switch contentEncoding {
+	case "gzip":
+		reader, err = gzip.NewReader(r.Body)
+		defer reader.Close()
+	default:
+		reader = r.Body
 	}
 
 	var (
 		m int
 	)
-	buf := make([]byte, 64*1024)
+	buf := mem.Allocate(64 * 1024)
+	defer mem.Free(buf)
 
 	for {
-		m, err = r.Body.Read(buf)
-		fn(buf[:m])
+		m, err = reader.Read(buf)
+		if m > 0 {
+			fn(buf[:m])
+		}
 		if err == io.EOF {
-			return nil
+			return false, nil
 		}
 		if err != nil {
-			return err
+			return true, err
 		}
 	}
 
 }
 
-func readEncryptedUrl(fileUrl string, cipherKey []byte, isContentGzipped bool, isFullChunk bool, offset int64, size int, fn func(data []byte)) error {
-	encryptedData, err := Get(fileUrl)
+func readEncryptedUrl(fileUrl string, cipherKey []byte, isContentCompressed bool, isFullChunk bool, offset int64, size int, fn func(data []byte)) (bool, error) {
+	encryptedData, retryable, err := Get(fileUrl)
 	if err != nil {
-		return fmt.Errorf("fetch %s: %v", fileUrl, err)
+		return retryable, fmt.Errorf("fetch %s: %v", fileUrl, err)
 	}
 	decryptedData, err := Decrypt(encryptedData, CipherKey(cipherKey))
 	if err != nil {
-		return fmt.Errorf("decrypt %s: %v", fileUrl, err)
+		return false, fmt.Errorf("decrypt %s: %v", fileUrl, err)
 	}
-	if isContentGzipped {
-		decryptedData, err = UnGzipData(decryptedData)
+	if isContentCompressed {
+		decryptedData, err = DecompressData(decryptedData)
 		if err != nil {
-			return fmt.Errorf("unzip decrypt %s: %v", fileUrl, err)
+			glog.V(0).Infof("unzip decrypt %s: %v", fileUrl, err)
 		}
 	}
 	if len(decryptedData) < int(offset)+size {
-		return fmt.Errorf("read decrypted %s size %d [%d, %d)", fileUrl, len(decryptedData), offset, int(offset)+size)
+		return false, fmt.Errorf("read decrypted %s size %d [%d, %d)", fileUrl, len(decryptedData), offset, int(offset)+size)
 	}
 	if isFullChunk {
 		fn(decryptedData)
 	} else {
 		fn(decryptedData[int(offset) : int(offset)+size])
 	}
-	return nil
+	return false, nil
 }
 
-func ReadUrlAsReaderCloser(fileUrl string, rangeHeader string) (io.ReadCloser, error) {
+func ReadUrlAsReaderCloser(fileUrl string, jwt string, rangeHeader string) (*http.Response, io.ReadCloser, error) {
 
 	req, err := http.NewRequest("GET", fileUrl, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if rangeHeader != "" {
 		req.Header.Add("Range", rangeHeader)
+	} else {
+		req.Header.Add("Accept-Encoding", "gzip")
+	}
+
+	if len(jwt) > 0 {
+		req.Header.Set("Authorization", "BEARER "+jwt)
 	}
 
 	r, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if r.StatusCode >= 400 {
-		return nil, fmt.Errorf("%s: %s", fileUrl, r.Status)
+		CloseResponse(r)
+		return nil, nil, fmt.Errorf("%s: %s", fileUrl, r.Status)
 	}
 
-	return r.Body, nil
+	var reader io.ReadCloser
+	contentEncoding := r.Header.Get("Content-Encoding")
+	switch contentEncoding {
+	case "gzip":
+		reader, err = gzip.NewReader(r.Body)
+	default:
+		reader = r.Body
+	}
+
+	return r, reader, nil
 }
 
 func CloseResponse(resp *http.Response) {
-	io.Copy(ioutil.Discard, resp.Body)
+	if resp == nil || resp.Body == nil {
+		return
+	}
+	reader := &CountingReader{reader: resp.Body}
+	io.Copy(io.Discard, reader)
 	resp.Body.Close()
+	if reader.BytesRead > 0 {
+		glog.V(1).Infof("response leftover %d bytes", reader.BytesRead)
+	}
+}
+
+func CloseRequest(req *http.Request) {
+	reader := &CountingReader{reader: req.Body}
+	io.Copy(io.Discard, reader)
+	req.Body.Close()
+	if reader.BytesRead > 0 {
+		glog.V(1).Infof("request leftover %d bytes", reader.BytesRead)
+	}
+}
+
+type CountingReader struct {
+	reader    io.Reader
+	BytesRead int
+}
+
+func (r *CountingReader) Read(p []byte) (n int, err error) {
+	n, err = r.reader.Read(p)
+	r.BytesRead += n
+	return n, err
 }

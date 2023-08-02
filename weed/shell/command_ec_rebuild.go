@@ -4,12 +4,13 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"github.com/seaweedfs/seaweedfs/weed/pb"
 	"io"
 
-	"github.com/chrislusf/seaweedfs/weed/operation"
-	"github.com/chrislusf/seaweedfs/weed/pb/volume_server_pb"
-	"github.com/chrislusf/seaweedfs/weed/storage/erasure_coding"
-	"github.com/chrislusf/seaweedfs/weed/storage/needle"
+	"github.com/seaweedfs/seaweedfs/weed/operation"
+	"github.com/seaweedfs/seaweedfs/weed/pb/volume_server_pb"
+	"github.com/seaweedfs/seaweedfs/weed/storage/erasure_coding"
+	"github.com/seaweedfs/seaweedfs/weed/storage/needle"
 	"google.golang.org/grpc"
 )
 
@@ -56,15 +57,16 @@ func (c *commandEcRebuild) Help() string {
 
 func (c *commandEcRebuild) Do(args []string, commandEnv *CommandEnv, writer io.Writer) (err error) {
 
-	if err = commandEnv.confirmIsLocked(); err != nil {
-		return
-	}
-
 	fixCommand := flag.NewFlagSet(c.Name(), flag.ContinueOnError)
 	collection := fixCommand.String("collection", "EACH_COLLECTION", "collection name, or \"EACH_COLLECTION\" for each collection")
 	applyChanges := fixCommand.Bool("force", false, "apply the changes")
 	if err = fixCommand.Parse(args); err != nil {
 		return nil
+	}
+	infoAboutSimulationMode(writer, *applyChanges, "-force")
+
+	if err = commandEnv.confirmIsLocked(args); err != nil {
+		return
 	}
 
 	// collect all ec nodes
@@ -113,7 +115,7 @@ func rebuildEcVolumes(commandEnv *CommandEnv, allEcNodes []*EcNode, collection s
 			return fmt.Errorf("ec volume %d is unrepairable with %d shards\n", vid, shardCount)
 		}
 
-		sortEcNodesByFreeslotsDecending(allEcNodes)
+		sortEcNodesByFreeslotsDescending(allEcNodes)
 
 		if allEcNodes[0].freeEcSlot < erasure_coding.TotalShardsCount {
 			return fmt.Errorf("disk space is not enough")
@@ -129,6 +131,10 @@ func rebuildEcVolumes(commandEnv *CommandEnv, allEcNodes []*EcNode, collection s
 
 func rebuildOneEcVolume(commandEnv *CommandEnv, rebuilder *EcNode, collection string, volumeId needle.VolumeId, locations EcShardLocations, writer io.Writer, applyChanges bool) error {
 
+	if !commandEnv.isLocked() {
+		return fmt.Errorf("lock is lost")
+	}
+
 	fmt.Printf("rebuildOneEcVolume %s %d\n", collection, volumeId)
 
 	// collect shard files to rebuilder local disk
@@ -141,7 +147,7 @@ func rebuildOneEcVolume(commandEnv *CommandEnv, rebuilder *EcNode, collection st
 		// clean up working files
 
 		// ask the rebuilder to delete the copied shards
-		err = sourceServerDeleteEcShards(commandEnv.option.GrpcDialOption, collection, volumeId, rebuilder.info.Id, copiedShardIds)
+		err = sourceServerDeleteEcShards(commandEnv.option.GrpcDialOption, collection, volumeId, pb.NewServerAddressFromDataNode(rebuilder.info), copiedShardIds)
 		if err != nil {
 			fmt.Fprintf(writer, "%s delete copied ec shards %s %d.%v\n", rebuilder.info.Id, collection, volumeId, copiedShardIds)
 		}
@@ -153,13 +159,13 @@ func rebuildOneEcVolume(commandEnv *CommandEnv, rebuilder *EcNode, collection st
 	}
 
 	// generate ec shards, and maybe ecx file
-	generatedShardIds, err = generateMissingShards(commandEnv.option.GrpcDialOption, collection, volumeId, rebuilder.info.Id)
+	generatedShardIds, err = generateMissingShards(commandEnv.option.GrpcDialOption, collection, volumeId, pb.NewServerAddressFromDataNode(rebuilder.info))
 	if err != nil {
 		return err
 	}
 
 	// mount the generated shards
-	err = mountEcShards(commandEnv.option.GrpcDialOption, collection, volumeId, rebuilder.info.Id, generatedShardIds)
+	err = mountEcShards(commandEnv.option.GrpcDialOption, collection, volumeId, pb.NewServerAddressFromDataNode(rebuilder.info), generatedShardIds)
 	if err != nil {
 		return err
 	}
@@ -169,17 +175,17 @@ func rebuildOneEcVolume(commandEnv *CommandEnv, rebuilder *EcNode, collection st
 	return nil
 }
 
-func generateMissingShards(grpcDialOption grpc.DialOption, collection string, volumeId needle.VolumeId, sourceLocation string) (rebuiltShardIds []uint32, err error) {
+func generateMissingShards(grpcDialOption grpc.DialOption, collection string, volumeId needle.VolumeId, sourceLocation pb.ServerAddress) (rebuiltShardIds []uint32, err error) {
 
-	err = operation.WithVolumeServerClient(sourceLocation, grpcDialOption, func(volumeServerClient volume_server_pb.VolumeServerClient) error {
-		resp, rebultErr := volumeServerClient.VolumeEcShardsRebuild(context.Background(), &volume_server_pb.VolumeEcShardsRebuildRequest{
+	err = operation.WithVolumeServerClient(false, sourceLocation, grpcDialOption, func(volumeServerClient volume_server_pb.VolumeServerClient) error {
+		resp, rebuildErr := volumeServerClient.VolumeEcShardsRebuild(context.Background(), &volume_server_pb.VolumeEcShardsRebuildRequest{
 			VolumeId:   uint32(volumeId),
 			Collection: collection,
 		})
-		if rebultErr == nil {
+		if rebuildErr == nil {
 			rebuiltShardIds = resp.RebuiltShardIds
 		}
-		return rebultErr
+		return rebuildErr
 	})
 	return
 }
@@ -188,10 +194,12 @@ func prepareDataToRecover(commandEnv *CommandEnv, rebuilder *EcNode, collection 
 
 	needEcxFile := true
 	var localShardBits erasure_coding.ShardBits
-	for _, ecShardInfo := range rebuilder.info.EcShardInfos {
-		if ecShardInfo.Collection == collection && needle.VolumeId(ecShardInfo.Id) == volumeId {
-			needEcxFile = false
-			localShardBits = erasure_coding.ShardBits(ecShardInfo.EcIndexBits)
+	for _, diskInfo := range rebuilder.info.DiskInfos {
+		for _, ecShardInfo := range diskInfo.EcShardInfos {
+			if ecShardInfo.Collection == collection && needle.VolumeId(ecShardInfo.Id) == volumeId {
+				needEcxFile = false
+				localShardBits = erasure_coding.ShardBits(ecShardInfo.EcIndexBits)
+			}
 		}
 	}
 
@@ -210,7 +218,7 @@ func prepareDataToRecover(commandEnv *CommandEnv, rebuilder *EcNode, collection 
 
 		var copyErr error
 		if applyBalancing {
-			copyErr = operation.WithVolumeServerClient(rebuilder.info.Id, commandEnv.option.GrpcDialOption, func(volumeServerClient volume_server_pb.VolumeServerClient) error {
+			copyErr = operation.WithVolumeServerClient(false, pb.NewServerAddressFromDataNode(rebuilder.info), commandEnv.option.GrpcDialOption, func(volumeServerClient volume_server_pb.VolumeServerClient) error {
 				_, copyErr := volumeServerClient.VolumeEcShardsCopy(context.Background(), &volume_server_pb.VolumeEcShardsCopyRequest{
 					VolumeId:       uint32(volumeId),
 					Collection:     collection,
@@ -247,15 +255,17 @@ type EcShardMap map[needle.VolumeId]EcShardLocations
 type EcShardLocations [][]*EcNode
 
 func (ecShardMap EcShardMap) registerEcNode(ecNode *EcNode, collection string) {
-	for _, shardInfo := range ecNode.info.EcShardInfos {
-		if shardInfo.Collection == collection {
-			existing, found := ecShardMap[needle.VolumeId(shardInfo.Id)]
-			if !found {
-				existing = make([][]*EcNode, erasure_coding.TotalShardsCount)
-				ecShardMap[needle.VolumeId(shardInfo.Id)] = existing
-			}
-			for _, shardId := range erasure_coding.ShardBits(shardInfo.EcIndexBits).ShardIds() {
-				existing[shardId] = append(existing[shardId], ecNode)
+	for _, diskInfo := range ecNode.info.DiskInfos {
+		for _, shardInfo := range diskInfo.EcShardInfos {
+			if shardInfo.Collection == collection {
+				existing, found := ecShardMap[needle.VolumeId(shardInfo.Id)]
+				if !found {
+					existing = make([][]*EcNode, erasure_coding.TotalShardsCount)
+					ecShardMap[needle.VolumeId(shardInfo.Id)] = existing
+				}
+				for _, shardId := range erasure_coding.ShardBits(shardInfo.EcIndexBits).ShardIds() {
+					existing[shardId] = append(existing[shardId], ecNode)
+				}
 			}
 		}
 	}

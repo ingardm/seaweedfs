@@ -1,22 +1,38 @@
 package weed_server
 
 import (
-	"fmt"
 	"net/http"
+	"sync"
+	"time"
+
+	"github.com/seaweedfs/seaweedfs/weed/pb"
+	"github.com/seaweedfs/seaweedfs/weed/pb/volume_server_pb"
+	"github.com/seaweedfs/seaweedfs/weed/storage/types"
 
 	"google.golang.org/grpc"
 
-	"github.com/chrislusf/seaweedfs/weed/stats"
-	"github.com/chrislusf/seaweedfs/weed/util"
+	"github.com/seaweedfs/seaweedfs/weed/stats"
+	"github.com/seaweedfs/seaweedfs/weed/util"
 
-	"github.com/chrislusf/seaweedfs/weed/glog"
-	"github.com/chrislusf/seaweedfs/weed/security"
-	"github.com/chrislusf/seaweedfs/weed/storage"
+	"github.com/seaweedfs/seaweedfs/weed/glog"
+	"github.com/seaweedfs/seaweedfs/weed/security"
+	"github.com/seaweedfs/seaweedfs/weed/storage"
 )
 
 type VolumeServer struct {
-	SeedMasterNodes []string
-	currentMaster   string
+	volume_server_pb.UnimplementedVolumeServerServer
+	inFlightUploadDataSize        int64
+	inFlightDownloadDataSize      int64
+	concurrentUploadLimit         int64
+	concurrentDownloadLimit       int64
+	inFlightUploadDataLimitCond   *sync.Cond
+	inFlightDownloadDataLimitCond *sync.Cond
+	inflightUploadDataTimeout     time.Duration
+	hasSlowRead                   bool
+	readBufferSizeMB              int
+
+	SeedMasterNodes []pb.ServerAddress
+	currentMaster   pb.ServerAddress
 	pulseSeconds    int
 	dataCenter      string
 	rack            string
@@ -24,26 +40,36 @@ type VolumeServer struct {
 	guard           *security.Guard
 	grpcDialOption  grpc.DialOption
 
-	needleMapKind           storage.NeedleMapType
+	needleMapKind           storage.NeedleMapKind
+	ldbTimout               int64
 	FixJpgOrientation       bool
-	ReadRedirect            bool
+	ReadMode                string
 	compactionBytePerSecond int64
-	MetricsAddress          string
-	MetricsIntervalSec      int
+	metricsAddress          string
+	metricsIntervalSec      int
 	fileSizeLimitBytes      int64
+	isHeartbeating          bool
+	stopChan                chan bool
 }
 
 func NewVolumeServer(adminMux, publicMux *http.ServeMux, ip string,
-	port int, publicUrl string,
-	folders []string, maxCounts []int, minFreeSpacePercent []float32,
-	needleMapKind storage.NeedleMapType,
-	masterNodes []string, pulseSeconds int,
+	port int, grpcPort int, publicUrl string,
+	folders []string, maxCounts []int32, minFreeSpaces []util.MinFreeSpace, diskTypes []types.DiskType,
+	idxFolder string,
+	needleMapKind storage.NeedleMapKind,
+	masterNodes []pb.ServerAddress, pulseSeconds int,
 	dataCenter string, rack string,
 	whiteList []string,
 	fixJpgOrientation bool,
-	readRedirect bool,
+	readMode string,
 	compactionMBPerSecond int,
 	fileSizeLimitMB int,
+	concurrentUploadLimit int64,
+	concurrentDownloadLimit int64,
+	inflightUploadDataTimeout time.Duration,
+	hasSlowRead bool,
+	readBufferSizeMB int,
+	ldbTimeout int64,
 ) *VolumeServer {
 
 	v := util.GetViper()
@@ -57,25 +83,39 @@ func NewVolumeServer(adminMux, publicMux *http.ServeMux, ip string,
 	readExpiresAfterSec := v.GetInt("jwt.signing.read.expires_after_seconds")
 
 	vs := &VolumeServer{
-		pulseSeconds:            pulseSeconds,
-		dataCenter:              dataCenter,
-		rack:                    rack,
-		needleMapKind:           needleMapKind,
-		FixJpgOrientation:       fixJpgOrientation,
-		ReadRedirect:            readRedirect,
-		grpcDialOption:          security.LoadClientTLS(util.GetViper(), "grpc.volume"),
-		compactionBytePerSecond: int64(compactionMBPerSecond) * 1024 * 1024,
-		fileSizeLimitBytes:      int64(fileSizeLimitMB) * 1024 * 1024,
+		pulseSeconds:                  pulseSeconds,
+		dataCenter:                    dataCenter,
+		rack:                          rack,
+		needleMapKind:                 needleMapKind,
+		FixJpgOrientation:             fixJpgOrientation,
+		ReadMode:                      readMode,
+		grpcDialOption:                security.LoadClientTLS(util.GetViper(), "grpc.volume"),
+		compactionBytePerSecond:       int64(compactionMBPerSecond) * 1024 * 1024,
+		fileSizeLimitBytes:            int64(fileSizeLimitMB) * 1024 * 1024,
+		isHeartbeating:                true,
+		stopChan:                      make(chan bool),
+		inFlightUploadDataLimitCond:   sync.NewCond(new(sync.Mutex)),
+		inFlightDownloadDataLimitCond: sync.NewCond(new(sync.Mutex)),
+		concurrentUploadLimit:         concurrentUploadLimit,
+		concurrentDownloadLimit:       concurrentDownloadLimit,
+		inflightUploadDataTimeout:     inflightUploadDataTimeout,
+		hasSlowRead:                   hasSlowRead,
+		readBufferSizeMB:              readBufferSizeMB,
+		ldbTimout:                     ldbTimeout,
 	}
 	vs.SeedMasterNodes = masterNodes
-	vs.store = storage.NewStore(vs.grpcDialOption, port, ip, publicUrl, folders, maxCounts, minFreeSpacePercent, vs.needleMapKind)
+
+	vs.checkWithMaster()
+
+	vs.store = storage.NewStore(vs.grpcDialOption, ip, port, grpcPort, publicUrl, folders, maxCounts, minFreeSpaces, idxFolder, vs.needleMapKind, diskTypes, ldbTimeout)
 	vs.guard = security.NewGuard(whiteList, signingKey, expiresAfterSec, readSigningKey, readExpiresAfterSec)
 
 	handleStaticResources(adminMux)
+	adminMux.HandleFunc("/status", vs.statusHandler)
+	adminMux.HandleFunc("/healthz", vs.healthzHandler)
 	if signingKey == "" || enableUiAccess {
 		// only expose the volume server details for safe environments
 		adminMux.HandleFunc("/ui/index.html", vs.uiStatusHandler)
-		adminMux.HandleFunc("/status", vs.guard.WhiteList(vs.statusHandler))
 		/*
 			adminMux.HandleFunc("/stats/counter", vs.guard.WhiteList(statsCounterHandler))
 			adminMux.HandleFunc("/stats/memory", vs.guard.WhiteList(statsMemoryHandler))
@@ -90,13 +130,19 @@ func NewVolumeServer(adminMux, publicMux *http.ServeMux, ip string,
 	}
 
 	go vs.heartbeat()
-	hostAddress := fmt.Sprintf("%s:%d", ip, port)
-	go stats.LoopPushingMetric("volumeServer", hostAddress, stats.VolumeServerGather,
-		func() (addr string, intervalSeconds int) {
-			return vs.MetricsAddress, vs.MetricsIntervalSec
-		})
+	go stats.LoopPushingMetric("volumeServer", util.JoinHostPort(ip, port), vs.metricsAddress, vs.metricsIntervalSec)
 
 	return vs
+}
+
+func (vs *VolumeServer) SetStopping() {
+	glog.V(0).Infoln("Stopping volume server...")
+	vs.store.SetStopping()
+}
+
+func (vs *VolumeServer) LoadNewVolumes() {
+	glog.V(0).Infoln(" Loading new volume ids ...")
+	vs.store.LoadNewVolumes()
 }
 
 func (vs *VolumeServer) Shutdown() {

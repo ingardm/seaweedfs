@@ -1,15 +1,15 @@
 package backend
 
 import (
+	"github.com/seaweedfs/seaweedfs/weed/util"
 	"io"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/chrislusf/seaweedfs/weed/glog"
-	"github.com/chrislusf/seaweedfs/weed/pb/master_pb"
-	"github.com/chrislusf/seaweedfs/weed/pb/volume_server_pb"
-	"github.com/spf13/viper"
+	"github.com/seaweedfs/seaweedfs/weed/glog"
+	"github.com/seaweedfs/seaweedfs/weed/pb/master_pb"
+	"github.com/seaweedfs/seaweedfs/weed/pb/volume_server_pb"
 )
 
 type BackendStorageFile interface {
@@ -25,7 +25,7 @@ type BackendStorageFile interface {
 type BackendStorage interface {
 	ToProperties() map[string]string
 	NewStorageFile(key string, tierInfo *volume_server_pb.VolumeInfo) BackendStorageFile
-	CopyFile(f *os.File, attributes map[string]string, fn func(progressed int64, percentage float32) error) (key string, size int64, err error)
+	CopyFile(f *os.File, fn func(progressed int64, percentage float32) error) (key string, size int64, err error)
 	DownloadFile(fileName string, key string, fn func(progressed int64, percentage float32) error) (size int64, err error)
 	DeleteFile(key string) (err error)
 }
@@ -45,7 +45,7 @@ var (
 )
 
 // used by master to load remote storage configurations
-func LoadConfiguration(config *viper.Viper) {
+func LoadConfiguration(config *util.ViperProxy) {
 
 	StorageBackendPrefix := "storage.backend"
 
@@ -56,6 +56,9 @@ func LoadConfiguration(config *viper.Viper) {
 		}
 		for backendStorageId := range config.GetStringMap(StorageBackendPrefix + "." + backendTypeName) {
 			if !config.GetBool(StorageBackendPrefix + "." + backendTypeName + "." + backendStorageId + ".enabled") {
+				continue
+			}
+			if _, found := BackendStorages[backendTypeName+"."+backendStorageId]; found {
 				continue
 			}
 			backendStorage, buildErr := backendStorageFactory.BuildStorage(config,
@@ -79,6 +82,9 @@ func LoadFromPbStorageBackends(storageBackends []*master_pb.StorageBackend) {
 		backendStorageFactory, found := BackendStorageFactories[StorageType(storageBackend.Type)]
 		if !found {
 			glog.Warningf("storage type %s not found", storageBackend.Type)
+			continue
+		}
+		if _, found := BackendStorages[storageBackend.Type+"."+storageBackend.Id]; found {
 			continue
 		}
 		backendStorage, buildErr := backendStorageFactory.BuildStorage(newProperties(storageBackend.Properties), "", storageBackend.Id)

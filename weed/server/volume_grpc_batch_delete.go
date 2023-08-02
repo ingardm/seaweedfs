@@ -5,10 +5,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/chrislusf/seaweedfs/weed/operation"
-	"github.com/chrislusf/seaweedfs/weed/pb/volume_server_pb"
-	"github.com/chrislusf/seaweedfs/weed/storage/needle"
-	"github.com/chrislusf/seaweedfs/weed/storage/types"
+	"github.com/seaweedfs/seaweedfs/weed/operation"
+	"github.com/seaweedfs/seaweedfs/weed/pb/volume_server_pb"
+	"github.com/seaweedfs/seaweedfs/weed/storage/needle"
 )
 
 func (vs *VolumeServer) BatchDelete(ctx context.Context, req *volume_server_pb.BatchDeleteRequest) (*volume_server_pb.BatchDeleteResponse, error) {
@@ -29,8 +28,9 @@ func (vs *VolumeServer) BatchDelete(ctx context.Context, req *volume_server_pb.B
 
 		n := new(needle.Needle)
 		volumeId, _ := needle.NewVolumeId(vid)
+		ecVolume, isEcVolume := vs.store.FindEcVolume(volumeId)
 		if req.SkipCookieCheck {
-			n.Id, err = types.ParseNeedleId(id_cookie)
+			n.Id, _, err = needle.ParseNeedleIdCookie(id_cookie)
 			if err != nil {
 				resp.Results = append(resp.Results, &volume_server_pb.DeleteResult{
 					FileId: fid,
@@ -41,13 +41,24 @@ func (vs *VolumeServer) BatchDelete(ctx context.Context, req *volume_server_pb.B
 		} else {
 			n.ParsePath(id_cookie)
 			cookie := n.Cookie
-			if _, err := vs.store.ReadVolumeNeedle(volumeId, n); err != nil {
-				resp.Results = append(resp.Results, &volume_server_pb.DeleteResult{
-					FileId: fid,
-					Status: http.StatusNotFound,
-					Error:  err.Error(),
-				})
-				continue
+			if !isEcVolume {
+				if _, err := vs.store.ReadVolumeNeedle(volumeId, n, nil, nil); err != nil {
+					resp.Results = append(resp.Results, &volume_server_pb.DeleteResult{
+						FileId: fid,
+						Status: http.StatusNotFound,
+						Error:  err.Error(),
+					})
+					continue
+				}
+			} else {
+				if _, err := vs.store.ReadEcShardNeedle(volumeId, n, nil); err != nil {
+					resp.Results = append(resp.Results, &volume_server_pb.DeleteResult{
+						FileId: fid,
+						Status: http.StatusNotFound,
+						Error:  err.Error(),
+					})
+					continue
+				}
 			}
 			if n.Cookie != cookie {
 				resp.Results = append(resp.Results, &volume_server_pb.DeleteResult{
@@ -69,18 +80,34 @@ func (vs *VolumeServer) BatchDelete(ctx context.Context, req *volume_server_pb.B
 		}
 
 		n.LastModified = now
-		if size, err := vs.store.DeleteVolumeNeedle(volumeId, n); err != nil {
-			resp.Results = append(resp.Results, &volume_server_pb.DeleteResult{
-				FileId: fid,
-				Status: http.StatusInternalServerError,
-				Error:  err.Error()},
-			)
+		if !isEcVolume {
+			if size, err := vs.store.DeleteVolumeNeedle(volumeId, n); err != nil {
+				resp.Results = append(resp.Results, &volume_server_pb.DeleteResult{
+					FileId: fid,
+					Status: http.StatusInternalServerError,
+					Error:  err.Error()},
+				)
+			} else {
+				resp.Results = append(resp.Results, &volume_server_pb.DeleteResult{
+					FileId: fid,
+					Status: http.StatusAccepted,
+					Size:   uint32(size)},
+				)
+			}
 		} else {
-			resp.Results = append(resp.Results, &volume_server_pb.DeleteResult{
-				FileId: fid,
-				Status: http.StatusAccepted,
-				Size:   size},
-			)
+			if size, err := vs.store.DeleteEcShardNeedle(ecVolume, n, n.Cookie); err != nil {
+				resp.Results = append(resp.Results, &volume_server_pb.DeleteResult{
+					FileId: fid,
+					Status: http.StatusInternalServerError,
+					Error:  err.Error()},
+				)
+			} else {
+				resp.Results = append(resp.Results, &volume_server_pb.DeleteResult{
+					FileId: fid,
+					Status: http.StatusAccepted,
+					Size:   uint32(size)},
+				)
+			}
 		}
 	}
 

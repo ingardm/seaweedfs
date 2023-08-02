@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/url"
 	"sort"
@@ -18,9 +17,11 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/seaweedfs/seaweedfs/weed/s3api/s3err"
 )
 
-// TestIsRequestPresignedSignatureV4 - Test validates the logic for presign signature verision v4 detection.
+// TestIsRequestPresignedSignatureV4 - Test validates the logic for presign signature version v4 detection.
 func TestIsRequestPresignedSignatureV4(t *testing.T) {
 	testCases := []struct {
 		inputQueryKey   string
@@ -56,7 +57,8 @@ func TestIsRequestPresignedSignatureV4(t *testing.T) {
 
 // Tests is requested authenticated function, tests replies for s3 errors.
 func TestIsReqAuthenticated(t *testing.T) {
-	iam := NewIdentityAccessManagement("", "")
+	option := S3ApiServerOption{}
+	iam := NewIdentityAccessManagement(&option)
 	iam.identities = []*Identity{
 		{
 			Name: "someone",
@@ -73,25 +75,26 @@ func TestIsReqAuthenticated(t *testing.T) {
 	// List of test cases for validating http request authentication.
 	testCases := []struct {
 		req     *http.Request
-		s3Error ErrorCode
+		s3Error s3err.ErrorCode
 	}{
 		// When request is unsigned, access denied is returned.
-		{mustNewRequest("GET", "http://127.0.0.1:9000", 0, nil, t), ErrAccessDenied},
+		{mustNewRequest("GET", "http://127.0.0.1:9000", 0, nil, t), s3err.ErrAccessDenied},
 		// When request is properly signed, error is none.
-		{mustNewSignedRequest("GET", "http://127.0.0.1:9000", 0, nil, t), ErrNone},
+		{mustNewSignedRequest("GET", "http://127.0.0.1:9000", 0, nil, t), s3err.ErrNone},
 	}
 
 	// Validates all testcases.
 	for i, testCase := range testCases {
 		if _, s3Error := iam.reqSignatureV4Verify(testCase.req); s3Error != testCase.s3Error {
-			ioutil.ReadAll(testCase.req.Body)
+			io.ReadAll(testCase.req.Body)
 			t.Fatalf("Test %d: Unexpected S3 error: want %d - got %d", i, testCase.s3Error, s3Error)
 		}
 	}
 }
 
 func TestCheckAdminRequestAuthType(t *testing.T) {
-	iam := NewIdentityAccessManagement("", "")
+	option := S3ApiServerOption{}
+	iam := NewIdentityAccessManagement(&option)
 	iam.identities = []*Identity{
 		{
 			Name: "someone",
@@ -107,11 +110,11 @@ func TestCheckAdminRequestAuthType(t *testing.T) {
 
 	testCases := []struct {
 		Request *http.Request
-		ErrCode ErrorCode
+		ErrCode s3err.ErrorCode
 	}{
-		{Request: mustNewRequest("GET", "http://127.0.0.1:9000", 0, nil, t), ErrCode: ErrAccessDenied},
-		{Request: mustNewSignedRequest("GET", "http://127.0.0.1:9000", 0, nil, t), ErrCode: ErrNone},
-		{Request: mustNewPresignedRequest("GET", "http://127.0.0.1:9000", 0, nil, t), ErrCode: ErrNone},
+		{Request: mustNewRequest("GET", "http://127.0.0.1:9000", 0, nil, t), ErrCode: s3err.ErrAccessDenied},
+		{Request: mustNewSignedRequest("GET", "http://127.0.0.1:9000", 0, nil, t), ErrCode: s3err.ErrNone},
+		{Request: mustNewPresignedRequest("GET", "http://127.0.0.1:9000", 0, nil, t), ErrCode: s3err.ErrNone},
 	}
 	for i, testCase := range testCases {
 		if _, s3Error := iam.reqSignatureV4Verify(testCase.Request); s3Error != testCase.ErrCode {
@@ -135,7 +138,7 @@ func mustNewSignedRequest(method string, urlStr string, contentLength int64, bod
 	req := mustNewRequest(method, urlStr, contentLength, body, t)
 	cred := &Credential{"access_key_1", "secret_key_1"}
 	if err := signRequestV4(req, cred.AccessKey, cred.SecretKey); err != nil {
-		t.Fatalf("Unable to inititalized new signed http request %s", err)
+		t.Fatalf("Unable to initialized new signed http request %s", err)
 	}
 	return req
 }
@@ -146,7 +149,7 @@ func mustNewPresignedRequest(method string, urlStr string, contentLength int64, 
 	req := mustNewRequest(method, urlStr, contentLength, body, t)
 	cred := &Credential{"access_key_1", "secret_key_1"}
 	if err := preSignV4(req, cred.AccessKey, cred.SecretKey, int64(10*time.Minute.Seconds())); err != nil {
-		t.Fatalf("Unable to inititalized new signed http request %s", err)
+		t.Fatalf("Unable to initialized new signed http request %s", err)
 	}
 	return req
 }
@@ -164,7 +167,7 @@ func newTestRequest(method, urlStr string, contentLength int64, body io.ReadSeek
 	case body == nil:
 		hashedPayload = getSHA256Hash([]byte{})
 	default:
-		payloadBytes, err := ioutil.ReadAll(body)
+		payloadBytes, err := io.ReadAll(body)
 		if err != nil {
 			return nil, err
 		}
@@ -367,7 +370,7 @@ func preSignV4(req *http.Request, accessKeyID, secretAccessKey string, expires i
 	queryStr := strings.Replace(query.Encode(), "+", "%20", -1)
 	canonicalRequest := getCanonicalRequest(extractedSignedHeaders, unsignedPayload, queryStr, req.URL.Path, req.Method)
 	stringToSign := getStringToSign(canonicalRequest, date, scope)
-	signingKey := getSigningKey(secretAccessKey, date, region)
+	signingKey := getSigningKey(secretAccessKey, date, region, "s3")
 	signature := getSignature(signingKey, stringToSign)
 
 	req.URL.RawQuery = query.Encode()

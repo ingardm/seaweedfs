@@ -2,8 +2,8 @@ package command
 
 import (
 	"bufio"
-	"context"
 	"fmt"
+	"github.com/seaweedfs/seaweedfs/weed/pb"
 	"io"
 	"math"
 	"math/rand"
@@ -11,18 +11,16 @@ import (
 	"runtime"
 	"runtime/pprof"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
 	"google.golang.org/grpc"
 
-	"github.com/chrislusf/seaweedfs/weed/glog"
-	"github.com/chrislusf/seaweedfs/weed/operation"
-	"github.com/chrislusf/seaweedfs/weed/pb/volume_server_pb"
-	"github.com/chrislusf/seaweedfs/weed/security"
-	"github.com/chrislusf/seaweedfs/weed/util"
-	"github.com/chrislusf/seaweedfs/weed/wdclient"
+	"github.com/seaweedfs/seaweedfs/weed/glog"
+	"github.com/seaweedfs/seaweedfs/weed/operation"
+	"github.com/seaweedfs/seaweedfs/weed/security"
+	"github.com/seaweedfs/seaweedfs/weed/util"
+	"github.com/seaweedfs/seaweedfs/weed/wdclient"
 )
 
 type BenchmarkOptions struct {
@@ -37,11 +35,11 @@ type BenchmarkOptions struct {
 	sequentialRead   *bool
 	collection       *string
 	replication      *string
+	diskType         *string
 	cpuprofile       *string
 	maxCpu           *int
 	grpcDialOption   grpc.DialOption
 	masterClient     *wdclient.MasterClient
-	grpcRead         *bool
 	fsync            *bool
 }
 
@@ -65,23 +63,23 @@ func init() {
 	b.sequentialRead = cmdBenchmark.Flag.Bool("readSequentially", false, "randomly read by ids from \"-list\" specified file")
 	b.collection = cmdBenchmark.Flag.String("collection", "benchmark", "write data to this collection")
 	b.replication = cmdBenchmark.Flag.String("replication", "000", "replication type")
+	b.diskType = cmdBenchmark.Flag.String("disk", "", "[hdd|ssd|<tag>] hard drive or solid state drive or any tag")
 	b.cpuprofile = cmdBenchmark.Flag.String("cpuprofile", "", "cpu profile output file")
 	b.maxCpu = cmdBenchmark.Flag.Int("maxCpu", 0, "maximum number of CPUs. 0 means all available CPUs")
-	b.grpcRead = cmdBenchmark.Flag.Bool("grpcRead", false, "use grpc API to read")
 	b.fsync = cmdBenchmark.Flag.Bool("fsync", false, "flush data to disk after write")
 	sharedBytes = make([]byte, 1024)
 }
 
 var cmdBenchmark = &Command{
 	UsageLine: "benchmark -master=localhost:9333 -c=10 -n=100000",
-	Short:     "benchmark on writing millions of files and read out",
+	Short:     "benchmark by writing millions of files and reading them out",
 	Long: `benchmark on an empty SeaweedFS file system.
 
   Two tests during benchmark:
   1) write lots of small files to the system
   2) read the files out
 
-  The file content is mostly zero, but no compression is done.
+  The file content is mostly zeros, but no compression is done.
 
   You can choose to only benchmark read or write.
   During write, the list of uploaded file ids is stored in "-list" specified file.
@@ -129,7 +127,7 @@ func runBenchmark(cmd *Command, args []string) bool {
 		defer pprof.StopCPUProfile()
 	}
 
-	b.masterClient = wdclient.NewMasterClient(b.grpcDialOption, "client", "", 0, strings.Split(*b.masters, ","))
+	b.masterClient = wdclient.NewMasterClient(b.grpcDialOption, "", "client", "", "", "", pb.ServerAddresses(*b.masters).ToAddressMap())
 	go b.masterClient.KeepConnectedToMaster()
 	b.masterClient.WaitUntilConnected()
 
@@ -212,7 +210,7 @@ func writeFiles(idChan chan int, fileIdLineChan chan string, s *stat) {
 				}
 				var jwtAuthorization security.EncodedJwt
 				if isSecure {
-					jwtAuthorization = operation.LookupJwt(b.masterClient.GetMaster(), df.fp.Fid)
+					jwtAuthorization = operation.LookupJwt(b.masterClient.GetMaster(), b.grpcDialOption, df.fp.Fid)
 				}
 				if e := util.Delete(fmt.Sprintf("http://%s/%s", df.fp.Server, df.fp.Fid), string(jwtAuthorization)); e == nil {
 					s.completed++
@@ -238,13 +236,14 @@ func writeFiles(idChan chan int, fileIdLineChan chan string, s *stat) {
 			Count:       1,
 			Collection:  *b.collection,
 			Replication: *b.replication,
+			DiskType:    *b.diskType,
 		}
-		if assignResult, err := operation.Assign(b.masterClient.GetMaster(), b.grpcDialOption, ar); err == nil {
+		if assignResult, err := operation.Assign(b.masterClient.GetMaster, b.grpcDialOption, ar); err == nil {
 			fp.Server, fp.Fid, fp.Collection = assignResult.Url, assignResult.Fid, *b.collection
 			if !isSecure && assignResult.Auth != "" {
 				isSecure = true
 			}
-			if _, err := fp.Upload(0, b.masterClient.GetMaster(), false, assignResult.Auth, b.grpcDialOption); err == nil {
+			if _, err := fp.Upload(0, b.masterClient.GetMaster, false, assignResult.Auth, b.grpcDialOption); err == nil {
 				if random.Intn(100) < *b.deletePercentage {
 					s.total++
 					delayedDeleteChan <- &delayedFile{time.Now().Add(time.Second), fp}
@@ -286,25 +285,20 @@ func readFiles(fileIdLineChan chan string, s *stat) {
 		start := time.Now()
 		var bytesRead int
 		var err error
-		if *b.grpcRead {
-			volumeServer, err := b.masterClient.LookupVolumeServer(fid)
-			if err != nil {
-				s.failed++
-				println("!!!! ", fid, " location not found!!!!!")
-				continue
-			}
-			bytesRead, err = grpcFileGet(volumeServer, fid, b.grpcDialOption)
-		} else {
-			url, err := b.masterClient.LookupFileId(fid)
-			if err != nil {
-				s.failed++
-				println("!!!! ", fid, " location not found!!!!!")
-				continue
-			}
-			var bytes []byte
-			bytes, err = util.Get(url)
-			bytesRead = len(bytes)
+		urls, err := b.masterClient.LookupFileId(fid)
+		if err != nil {
+			s.failed++
+			println("!!!! ", fid, " location not found!!!!!")
+			continue
 		}
+		var bytes []byte
+		for _, url := range urls {
+			bytes, _, err = util.Get(url)
+			if err == nil {
+				break
+			}
+		}
+		bytesRead = len(bytes)
 		if err == nil {
 			s.completed++
 			s.transferred += int64(bytesRead)
@@ -314,29 +308,6 @@ func readFiles(fileIdLineChan chan string, s *stat) {
 			fmt.Printf("Failed to read %s error:%v\n", fid, err)
 		}
 	}
-}
-
-func grpcFileGet(volumeServer, fid string, grpcDialOption grpc.DialOption) (bytesRead int, err error) {
-	err = operation.WithVolumeServerClient(volumeServer, grpcDialOption, func(client volume_server_pb.VolumeServerClient) error {
-		fileGetClient, err := client.FileGet(context.Background(), &volume_server_pb.FileGetRequest{FileId: fid})
-		if err != nil {
-			return err
-		}
-
-		for {
-			resp, respErr := fileGetClient.Recv()
-			if resp != nil {
-				bytesRead += len(resp.Data)
-			}
-			if respErr != nil {
-				if respErr == io.EOF {
-					return nil
-				}
-				return respErr
-			}
-		}
-	})
-	return
 }
 
 func writeFileIds(fileName string, fileIdLineChan chan string, finishChan chan bool) {
@@ -396,7 +367,7 @@ func readFileIds(fileName string, fileIdLineChan chan string) {
 }
 
 const (
-	benchResolution = 10000 //0.1 microsecond
+	benchResolution = 10000 // 0.1 microsecond
 	benchBucket     = 1000000000 / benchResolution
 )
 
@@ -474,7 +445,7 @@ func (s *stats) printStats() {
 	timeTaken := float64(int64(s.end.Sub(s.start))) / 1000000000
 	fmt.Printf("\nConcurrency Level:      %d\n", *b.concurrency)
 	fmt.Printf("Time taken for tests:   %.3f seconds\n", timeTaken)
-	fmt.Printf("Complete requests:      %d\n", completed)
+	fmt.Printf("Completed requests:      %d\n", completed)
 	fmt.Printf("Failed requests:        %d\n", failed)
 	fmt.Printf("Total transferred:      %d bytes\n", transferred)
 	fmt.Printf("Requests per second:    %.2f [#/sec]\n", float64(completed)/timeTaken)
@@ -519,7 +490,7 @@ func (s *stats) printStats() {
 	fmt.Printf("\nConnection Times (ms)\n")
 	fmt.Printf("              min      avg        max      std\n")
 	fmt.Printf("Total:        %2.1f      %3.1f       %3.1f      %3.1f\n", float32(min)/10, float32(avg)/10, float32(max)/10, std/10)
-	//printing percentiles
+	// printing percentiles
 	fmt.Printf("\nPercentage of the requests served within a certain time (ms)\n")
 	percentiles := make([]int, len(percentages))
 	for i := 0; i < len(percentages); i++ {

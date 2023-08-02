@@ -1,47 +1,71 @@
 package weed_server
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/seaweedfs/seaweedfs/weed/s3api/s3_constants"
 	"io"
+	"io/fs"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc"
 
-	"github.com/chrislusf/seaweedfs/weed/glog"
-	"github.com/chrislusf/seaweedfs/weed/operation"
-	"github.com/chrislusf/seaweedfs/weed/stats"
-	"github.com/chrislusf/seaweedfs/weed/storage/needle"
-	"github.com/chrislusf/seaweedfs/weed/util"
+	"github.com/seaweedfs/seaweedfs/weed/glog"
+	"github.com/seaweedfs/seaweedfs/weed/operation"
+	"github.com/seaweedfs/seaweedfs/weed/stats"
+	"github.com/seaweedfs/seaweedfs/weed/storage/needle"
+	"github.com/seaweedfs/seaweedfs/weed/util"
 
 	"github.com/gorilla/mux"
-	statik "github.com/rakyll/statik/fs"
-
-	_ "github.com/chrislusf/seaweedfs/weed/statik"
 )
 
 var serverStats *stats.ServerStats
 var startTime = time.Now()
-var statikFS http.FileSystem
+var writePool = sync.Pool{New: func() interface{} {
+	return bufio.NewWriterSize(nil, 128*1024)
+},
+}
 
 func init() {
 	serverStats = stats.NewServerStats()
 	go serverStats.Start()
-	statikFS, _ = statik.New()
+}
+
+// bodyAllowedForStatus is a copy of http.bodyAllowedForStatus non-exported function.
+func bodyAllowedForStatus(status int) bool {
+	switch {
+	case status >= 100 && status <= 199:
+		return false
+	case status == http.StatusNoContent:
+		return false
+	case status == http.StatusNotModified:
+		return false
+	}
+	return true
 }
 
 func writeJson(w http.ResponseWriter, r *http.Request, httpStatus int, obj interface{}) (err error) {
+	if !bodyAllowedForStatus(httpStatus) {
+		return
+	}
+
 	var bytes []byte
-	if r.FormValue("pretty") != "" {
-		bytes, err = json.MarshalIndent(obj, "", "  ")
-	} else {
-		bytes, err = json.Marshal(obj)
+	if obj != nil {
+		if r.FormValue("pretty") != "" {
+			bytes, err = json.MarshalIndent(obj, "", "  ")
+		} else {
+			bytes, err = json.Marshal(obj)
+		}
 	}
 	if err != nil {
 		return
@@ -84,13 +108,14 @@ func writeJson(w http.ResponseWriter, r *http.Request, httpStatus int, obj inter
 // wrapper for writeJson - just logs errors
 func writeJsonQuiet(w http.ResponseWriter, r *http.Request, httpStatus int, obj interface{}) {
 	if err := writeJson(w, r, httpStatus, obj); err != nil {
-		glog.V(0).Infof("error writing JSON status %d: %v", httpStatus, err)
+		glog.V(0).Infof("error writing JSON status %s %d: %v", r.URL, httpStatus, err)
 		glog.V(1).Infof("JSON content: %+v", obj)
 	}
 }
 func writeJsonError(w http.ResponseWriter, r *http.Request, httpStatus int, err error) {
 	m := make(map[string]interface{})
 	m["error"] = err.Error()
+	glog.V(1).Infof("error JSON response status %d: %s", httpStatus, m["error"])
 	writeJsonQuiet(w, r, httpStatus, m)
 }
 
@@ -98,7 +123,7 @@ func debug(params ...interface{}) {
 	glog.V(4).Infoln(params...)
 }
 
-func submitForClientHandler(w http.ResponseWriter, r *http.Request, masterUrl string, grpcDialOption grpc.DialOption) {
+func submitForClientHandler(w http.ResponseWriter, r *http.Request, masterFn operation.GetMasterFn, grpcDialOption grpc.DialOption) {
 	m := make(map[string]interface{})
 	if r.Method != "POST" {
 		writeJsonError(w, r, http.StatusMethodNotAllowed, errors.New("Only submit via POST!"))
@@ -106,7 +131,9 @@ func submitForClientHandler(w http.ResponseWriter, r *http.Request, masterUrl st
 	}
 
 	debug("parsing upload file...")
-	pu, pe := needle.ParseUpload(r, 256*1024*1024)
+	bytesBuffer := bufPool.Get().(*bytes.Buffer)
+	defer bufPool.Put(bytesBuffer)
+	pu, pe := needle.ParseUpload(r, 256*1024*1024, bytesBuffer)
 	if pe != nil {
 		writeJsonError(w, r, http.StatusBadRequest, pe)
 		return
@@ -125,11 +152,13 @@ func submitForClientHandler(w http.ResponseWriter, r *http.Request, masterUrl st
 	ar := &operation.VolumeAssignRequest{
 		Count:       count,
 		DataCenter:  r.FormValue("dataCenter"),
+		Rack:        r.FormValue("rack"),
 		Replication: r.FormValue("replication"),
 		Collection:  r.FormValue("collection"),
 		Ttl:         r.FormValue("ttl"),
+		DiskType:    r.FormValue("disk"),
 	}
-	assignResult, ae := operation.Assign(masterUrl, grpcDialOption, ar)
+	assignResult, ae := operation.Assign(masterFn, grpcDialOption, ar)
 	if ae != nil {
 		writeJsonError(w, r, http.StatusInternalServerError, ae)
 		return
@@ -141,7 +170,16 @@ func submitForClientHandler(w http.ResponseWriter, r *http.Request, masterUrl st
 	}
 
 	debug("upload file to store", url)
-	uploadResult, err := operation.UploadData(url, pu.FileName, false, pu.Data, pu.IsGzipped, pu.MimeType, pu.PairMap, assignResult.Auth)
+	uploadOption := &operation.UploadOption{
+		UploadUrl:         url,
+		Filename:          pu.FileName,
+		Cipher:            false,
+		IsInputCompressed: pu.IsGzipped,
+		MimeType:          pu.MimeType,
+		PairMap:           pu.PairMap,
+		Jwt:               assignResult.Auth,
+	}
+	uploadResult, err := operation.UploadData(pu.Data, uploadOption)
 	if err != nil {
 		writeJsonError(w, r, http.StatusInternalServerError, err)
 		return
@@ -208,18 +246,32 @@ func statsMemoryHandler(w http.ResponseWriter, r *http.Request) {
 	writeJsonQuiet(w, r, http.StatusOK, m)
 }
 
+var StaticFS fs.FS
+
 func handleStaticResources(defaultMux *http.ServeMux) {
-	defaultMux.Handle("/favicon.ico", http.FileServer(statikFS))
-	defaultMux.Handle("/seaweedfsstatic/", http.StripPrefix("/seaweedfsstatic", http.FileServer(statikFS)))
+	defaultMux.Handle("/favicon.ico", http.FileServer(http.FS(StaticFS)))
+	defaultMux.Handle("/seaweedfsstatic/", http.StripPrefix("/seaweedfsstatic", http.FileServer(http.FS(StaticFS))))
 }
 
 func handleStaticResources2(r *mux.Router) {
-	r.Handle("/favicon.ico", http.FileServer(statikFS))
-	r.PathPrefix("/seaweedfsstatic/").Handler(http.StripPrefix("/seaweedfsstatic", http.FileServer(statikFS)))
+	r.Handle("/favicon.ico", http.FileServer(http.FS(StaticFS)))
+	r.PathPrefix("/seaweedfsstatic/").Handler(http.StripPrefix("/seaweedfsstatic", http.FileServer(http.FS(StaticFS))))
 }
 
-func adjustHeadersAfterHEAD(w http.ResponseWriter, r *http.Request, filename string) {
+func adjustPassthroughHeaders(w http.ResponseWriter, r *http.Request, filename string) {
+	for header, values := range r.Header {
+		if normalizedHeader, ok := s3_constants.PassThroughHeaders[strings.ToLower(header)]; ok {
+			w.Header()[normalizedHeader] = values
+		}
+	}
+	adjustHeaderContentDisposition(w, r, filename)
+}
+func adjustHeaderContentDisposition(w http.ResponseWriter, r *http.Request, filename string) {
+	if contentDisposition := w.Header().Get("Content-Disposition"); contentDisposition != "" {
+		return
+	}
 	if filename != "" {
+		filename = url.QueryEscape(filename)
 		contentDisposition := "inline"
 		if r.FormValue("dl") != "" {
 			if dl, _ := strconv.ParseBool(r.FormValue("dl")); dl {
@@ -230,34 +282,42 @@ func adjustHeadersAfterHEAD(w http.ResponseWriter, r *http.Request, filename str
 	}
 }
 
-func processRangeRequest(r *http.Request, w http.ResponseWriter, totalSize int64, mimeType string, writeFn func(writer io.Writer, offset int64, size int64) error) {
+func processRangeRequest(r *http.Request, w http.ResponseWriter, totalSize int64, mimeType string, writeFn func(writer io.Writer, offset int64, size int64) error) error {
 	rangeReq := r.Header.Get("Range")
+	bufferedWriter := writePool.Get().(*bufio.Writer)
+	bufferedWriter.Reset(w)
+	defer func() {
+		bufferedWriter.Flush()
+		writePool.Put(bufferedWriter)
+	}()
 
 	if rangeReq == "" {
 		w.Header().Set("Content-Length", strconv.FormatInt(totalSize, 10))
-		if err := writeFn(w, 0, totalSize); err != nil {
+		if err := writeFn(bufferedWriter, 0, totalSize); err != nil {
+			glog.Errorf("processRangeRequest: %v", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+			return fmt.Errorf("processRangeRequest: %v", err)
 		}
-		return
+		return nil
 	}
 
 	//the rest is dealing with partial content request
 	//mostly copy from src/pkg/net/http/fs.go
 	ranges, err := parseRange(rangeReq, totalSize)
 	if err != nil {
+		glog.Errorf("processRangeRequest headers: %+v err: %v", w.Header(), err)
 		http.Error(w, err.Error(), http.StatusRequestedRangeNotSatisfiable)
-		return
+		return fmt.Errorf("processRangeRequest header: %v", err)
 	}
 	if sumRangesSize(ranges) > totalSize {
 		// The total number of bytes in all the ranges
 		// is larger than the size of the file by
 		// itself, so this is probably an attack, or a
 		// dumb client.  Ignore the range request.
-		return
+		return nil
 	}
 	if len(ranges) == 0 {
-		return
+		return nil
 	}
 	if len(ranges) == 1 {
 		// RFC 2616, Section 14.16:
@@ -274,21 +334,22 @@ func processRangeRequest(r *http.Request, w http.ResponseWriter, totalSize int64
 		ra := ranges[0]
 		w.Header().Set("Content-Length", strconv.FormatInt(ra.length, 10))
 		w.Header().Set("Content-Range", ra.contentRange(totalSize))
-		w.WriteHeader(http.StatusPartialContent)
 
-		err = writeFn(w, ra.start, ra.length)
+		w.WriteHeader(http.StatusPartialContent)
+		err = writeFn(bufferedWriter, ra.start, ra.length)
 		if err != nil {
+			glog.Errorf("processRangeRequest range[0]: %+v err: %v", w.Header(), err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+			return fmt.Errorf("processRangeRequest range[0]: %v", err)
 		}
-		return
+		return nil
 	}
 
 	// process multiple ranges
 	for _, ra := range ranges {
 		if ra.start > totalSize {
 			http.Error(w, "Out of Range", http.StatusRequestedRangeNotSatisfiable)
-			return
+			return fmt.Errorf("out of range: %v", err)
 		}
 	}
 	sendSize := rangesMIMESize(ranges, mimeType, totalSize)
@@ -316,8 +377,10 @@ func processRangeRequest(r *http.Request, w http.ResponseWriter, totalSize int64
 		w.Header().Set("Content-Length", strconv.FormatInt(sendSize, 10))
 	}
 	w.WriteHeader(http.StatusPartialContent)
-	if _, err := io.CopyN(w, sendContent, sendSize); err != nil {
+	if _, err := io.CopyN(bufferedWriter, sendContent, sendSize); err != nil {
+		glog.Errorf("processRangeRequest err: %v", err)
 		http.Error(w, "Internal Error", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("processRangeRequest err: %v", err)
 	}
+	return nil
 }

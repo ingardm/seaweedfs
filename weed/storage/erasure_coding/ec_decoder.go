@@ -5,12 +5,13 @@ import (
 	"io"
 	"os"
 
-	"github.com/chrislusf/seaweedfs/weed/storage/backend"
-	"github.com/chrislusf/seaweedfs/weed/storage/idx"
-	"github.com/chrislusf/seaweedfs/weed/storage/needle"
-	"github.com/chrislusf/seaweedfs/weed/storage/needle_map"
-	"github.com/chrislusf/seaweedfs/weed/storage/super_block"
-	"github.com/chrislusf/seaweedfs/weed/storage/types"
+	"github.com/seaweedfs/seaweedfs/weed/storage/backend"
+	"github.com/seaweedfs/seaweedfs/weed/storage/idx"
+	"github.com/seaweedfs/seaweedfs/weed/storage/needle"
+	"github.com/seaweedfs/seaweedfs/weed/storage/needle_map"
+	"github.com/seaweedfs/seaweedfs/weed/storage/super_block"
+	"github.com/seaweedfs/seaweedfs/weed/storage/types"
+	"github.com/seaweedfs/seaweedfs/weed/util"
 )
 
 // write .idx file from .ecx and .ecj files
@@ -44,20 +45,20 @@ func WriteIdxFileFromEcIndex(baseFileName string) (err error) {
 // FindDatFileSize calculate .dat file size from max offset entry
 // there may be extra deletions after that entry
 // but they are deletions anyway
-func FindDatFileSize(baseFileName string) (datSize int64, err error) {
+func FindDatFileSize(dataBaseFileName, indexBaseFileName string) (datSize int64, err error) {
 
-	version, err := readEcVolumeVersion(baseFileName)
+	version, err := readEcVolumeVersion(dataBaseFileName)
 	if err != nil {
-		return 0, fmt.Errorf("read ec volume %s version: %v", baseFileName, err)
+		return 0, fmt.Errorf("read ec volume %s version: %v", dataBaseFileName, err)
 	}
 
-	err = iterateEcxFile(baseFileName, func(key types.NeedleId, offset types.Offset, size uint32) error {
+	err = iterateEcxFile(indexBaseFileName, func(key types.NeedleId, offset types.Offset, size types.Size) error {
 
-		if size == types.TombstoneFileSize {
+		if size.IsDeleted() {
 			return nil
 		}
 
-		entryStopOffset := offset.ToAcutalOffset() + needle.GetActualSize(size, version)
+		entryStopOffset := offset.ToActualOffset() + needle.GetActualSize(size, version)
 		if datSize < entryStopOffset {
 			datSize = entryStopOffset
 		}
@@ -87,7 +88,7 @@ func readEcVolumeVersion(baseFileName string) (version needle.Version, err error
 
 }
 
-func iterateEcxFile(baseFileName string, processNeedleFn func(key types.NeedleId, offset types.Offset, size uint32) error) error {
+func iterateEcxFile(baseFileName string, processNeedleFn func(key types.NeedleId, offset types.Offset, size types.Size) error) error {
 	ecxFile, openErr := os.OpenFile(baseFileName+".ecx", os.O_RDONLY, 0644)
 	if openErr != nil {
 		return fmt.Errorf("cannot open ec index %s.ecx: %v", baseFileName, openErr)
@@ -118,9 +119,12 @@ func iterateEcxFile(baseFileName string, processNeedleFn func(key types.NeedleId
 }
 
 func iterateEcjFile(baseFileName string, processNeedleFn func(key types.NeedleId) error) error {
+	if !util.FileExists(baseFileName + ".ecj") {
+		return nil
+	}
 	ecjFile, openErr := os.OpenFile(baseFileName+".ecj", os.O_RDONLY, 0644)
 	if openErr != nil {
-		return fmt.Errorf("cannot open ec index %s.ecx: %v", baseFileName, openErr)
+		return fmt.Errorf("cannot open ec index %s.ecj: %v", baseFileName, openErr)
 	}
 	defer ecjFile.Close()
 
@@ -147,7 +151,7 @@ func iterateEcjFile(baseFileName string, processNeedleFn func(key types.NeedleId
 }
 
 // WriteDatFile generates .dat from from .ec00 ~ .ec09 files
-func WriteDatFile(baseFileName string, datFileSize int64) error {
+func WriteDatFile(baseFileName string, datFileSize int64, shardFileNames []string) error {
 
 	datFile, openErr := os.OpenFile(baseFileName+".dat", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if openErr != nil {
@@ -157,13 +161,19 @@ func WriteDatFile(baseFileName string, datFileSize int64) error {
 
 	inputFiles := make([]*os.File, DataShardsCount)
 
+	defer func() {
+		for shardId := 0; shardId < DataShardsCount; shardId++ {
+			if inputFiles[shardId] != nil {
+				inputFiles[shardId].Close()
+			}
+		}
+	}()
+
 	for shardId := 0; shardId < DataShardsCount; shardId++ {
-		shardFileName := baseFileName + ToExt(shardId)
-		inputFiles[shardId], openErr = os.OpenFile(shardFileName, os.O_RDONLY, 0)
+		inputFiles[shardId], openErr = os.OpenFile(shardFileNames[shardId], os.O_RDONLY, 0)
 		if openErr != nil {
 			return openErr
 		}
-		defer inputFiles[shardId].Close()
 	}
 
 	for datFileSize >= DataShardsCount*ErasureCodingLargeBlockSize {

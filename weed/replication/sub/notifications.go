@@ -1,8 +1,8 @@
 package sub
 
 import (
-	"github.com/chrislusf/seaweedfs/weed/pb/filer_pb"
-	"github.com/chrislusf/seaweedfs/weed/util"
+	"github.com/seaweedfs/seaweedfs/weed/pb/filer_pb"
+	"github.com/seaweedfs/seaweedfs/weed/util"
 )
 
 type NotificationInput interface {
@@ -10,7 +10,7 @@ type NotificationInput interface {
 	GetName() string
 	// Initialize initializes the file store
 	Initialize(configuration util.Configuration, prefix string) error
-	ReceiveMessage() (key string, message *filer_pb.EventNotification, err error)
+	ReceiveMessage() (key string, message *filer_pb.EventNotification, onSuccessFn func(), onFailureFn func(), err error)
 }
 
 var (

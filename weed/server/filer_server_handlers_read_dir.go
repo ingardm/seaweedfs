@@ -6,10 +6,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/chrislusf/seaweedfs/weed/glog"
-	ui "github.com/chrislusf/seaweedfs/weed/server/filer_ui"
-	"github.com/chrislusf/seaweedfs/weed/stats"
-	"github.com/chrislusf/seaweedfs/weed/util"
+	"github.com/seaweedfs/seaweedfs/weed/glog"
+	ui "github.com/seaweedfs/seaweedfs/weed/server/filer_ui"
+	"github.com/seaweedfs/seaweedfs/weed/stats"
+	"github.com/seaweedfs/seaweedfs/weed/util"
 )
 
 // listDirectoryHandler lists directories and folers under a directory
@@ -18,7 +18,7 @@ import (
 // is empty.
 func (fs *FilerServer) listDirectoryHandler(w http.ResponseWriter, r *http.Request) {
 
-	stats.FilerRequestCounter.WithLabelValues("list").Inc()
+	stats.FilerRequestCounter.WithLabelValues(stats.DirList).Inc()
 
 	path := r.URL.Path
 	if strings.HasSuffix(path, "/") && len(path) > 1 {
@@ -27,12 +27,14 @@ func (fs *FilerServer) listDirectoryHandler(w http.ResponseWriter, r *http.Reque
 
 	limit, limit_err := strconv.Atoi(r.FormValue("limit"))
 	if limit_err != nil {
-		limit = 100
+		limit = fs.option.DirListingLimit
 	}
 
 	lastFileName := r.FormValue("lastFileName")
+	namePattern := r.FormValue("namePattern")
+	namePatternExclude := r.FormValue("namePatternExclude")
 
-	entries, err := fs.filer.ListDirectoryEntries(context.Background(), util.FullPath(path), lastFileName, false, limit)
+	entries, shouldDisplayLoadMore, err := fs.filer.ListDirectoryEntries(context.Background(), util.FullPath(path), lastFileName, false, int64(limit), "", namePattern, namePatternExclude)
 
 	if err != nil {
 		glog.V(0).Infof("listDirectory %s %s %d: %s", path, lastFileName, limit, err)
@@ -40,13 +42,14 @@ func (fs *FilerServer) listDirectoryHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	shouldDisplayLoadMore := len(entries) == limit
 	if path == "/" {
 		path = ""
 	}
 
+	emptyFolder := true
 	if len(entries) > 0 {
 		lastFileName = entries[len(entries)-1].Name()
+		emptyFolder = false
 	}
 
 	glog.V(4).Infof("listDirectory %s, last file %s, limit %d: %d items", path, lastFileName, limit, len(entries))
@@ -58,28 +61,38 @@ func (fs *FilerServer) listDirectoryHandler(w http.ResponseWriter, r *http.Reque
 			Limit                 int
 			LastFileName          string
 			ShouldDisplayLoadMore bool
+			EmptyFolder           bool
 		}{
 			path,
 			entries,
 			limit,
 			lastFileName,
 			shouldDisplayLoadMore,
+			emptyFolder,
 		})
-	} else {
-		ui.StatusTpl.Execute(w, struct {
-			Path                  string
-			Breadcrumbs           []ui.Breadcrumb
-			Entries               interface{}
-			Limit                 int
-			LastFileName          string
-			ShouldDisplayLoadMore bool
-		}{
-			path,
-			ui.ToBreadcrumb(path),
-			entries,
-			limit,
-			lastFileName,
-			shouldDisplayLoadMore,
-		})
+		return
+	}
+
+	err = ui.StatusTpl.Execute(w, struct {
+		Path                  string
+		Breadcrumbs           []ui.Breadcrumb
+		Entries               interface{}
+		Limit                 int
+		LastFileName          string
+		ShouldDisplayLoadMore bool
+		EmptyFolder           bool
+		ShowDirectoryDelete   bool
+	}{
+		path,
+		ui.ToBreadcrumb(path),
+		entries,
+		limit,
+		lastFileName,
+		shouldDisplayLoadMore,
+		emptyFolder,
+		fs.option.ShowUIDirectoryDelete,
+	})
+	if err != nil {
+		glog.V(0).Infof("Template Execute Error: %v", err)
 	}
 }

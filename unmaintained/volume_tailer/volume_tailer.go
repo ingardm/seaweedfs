@@ -2,13 +2,14 @@ package main
 
 import (
 	"flag"
+	"github.com/seaweedfs/seaweedfs/weed/pb"
 	"log"
 	"time"
 
-	"github.com/chrislusf/seaweedfs/weed/operation"
-	"github.com/chrislusf/seaweedfs/weed/security"
-	"github.com/chrislusf/seaweedfs/weed/storage/needle"
-	util2 "github.com/chrislusf/seaweedfs/weed/util"
+	"github.com/seaweedfs/seaweedfs/weed/operation"
+	"github.com/seaweedfs/seaweedfs/weed/security"
+	"github.com/seaweedfs/seaweedfs/weed/storage/needle"
+	util2 "github.com/seaweedfs/seaweedfs/weed/util"
 	"golang.org/x/tools/godoc/util"
 )
 
@@ -37,7 +38,7 @@ func main() {
 		sinceTimeNs = time.Now().Add(-*rewindDuration).UnixNano()
 	}
 
-	err := operation.TailVolume(*master, grpcDialOption, vid, uint64(sinceTimeNs), *timeoutSeconds, func(n *needle.Needle) (err error) {
+	err := operation.TailVolume(func() pb.ServerAddress { return pb.ServerAddress(*master) }, grpcDialOption, vid, uint64(sinceTimeNs), *timeoutSeconds, func(n *needle.Needle) (err error) {
 		if n.Size == 0 {
 			println("-", n.String())
 			return nil
@@ -48,8 +49,8 @@ func main() {
 		if *showTextFile {
 
 			data := n.Data
-			if n.IsGzipped() {
-				if data, err = util2.UnGzipData(data); err != nil {
+			if n.IsCompressed() {
+				if data, err = util2.DecompressData(data); err != nil {
 					return err
 				}
 			}
@@ -57,7 +58,7 @@ func main() {
 				println(string(data))
 			}
 
-			println("-", n.String(), "compressed", n.IsGzipped(), "original size", len(data))
+			println("-", n.String(), "compressed", n.IsCompressed(), "original size", len(data))
 		}
 		return nil
 	})

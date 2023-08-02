@@ -1,10 +1,11 @@
 package topology
 
 import (
-	"github.com/chrislusf/seaweedfs/weed/glog"
-	"github.com/chrislusf/seaweedfs/weed/pb/master_pb"
-	"github.com/chrislusf/seaweedfs/weed/storage/erasure_coding"
-	"github.com/chrislusf/seaweedfs/weed/storage/needle"
+	"github.com/seaweedfs/seaweedfs/weed/glog"
+	"github.com/seaweedfs/seaweedfs/weed/pb"
+	"github.com/seaweedfs/seaweedfs/weed/pb/master_pb"
+	"github.com/seaweedfs/seaweedfs/weed/storage/erasure_coding"
+	"github.com/seaweedfs/seaweedfs/weed/storage/needle"
 )
 
 type EcShardLocations struct {
@@ -18,6 +19,7 @@ func (t *Topology) SyncDataNodeEcShards(shardInfos []*master_pb.VolumeEcShardInf
 	for _, shardInfo := range shardInfos {
 		shards = append(shards,
 			erasure_coding.NewEcVolumeInfo(
+				shardInfo.DiskType,
 				shardInfo.Collection,
 				needle.VolumeId(shardInfo.Id),
 				erasure_coding.ShardBits(shardInfo.EcIndexBits)))
@@ -39,6 +41,7 @@ func (t *Topology) IncrementalSyncDataNodeEcShards(newEcShards, deletedEcShards 
 	for _, shardInfo := range newEcShards {
 		newShards = append(newShards,
 			erasure_coding.NewEcVolumeInfo(
+				shardInfo.DiskType,
 				shardInfo.Collection,
 				needle.VolumeId(shardInfo.Id),
 				erasure_coding.ShardBits(shardInfo.EcIndexBits)))
@@ -46,6 +49,7 @@ func (t *Topology) IncrementalSyncDataNodeEcShards(newEcShards, deletedEcShards 
 	for _, shardInfo := range deletedEcShards {
 		deletedShards = append(deletedShards,
 			erasure_coding.NewEcVolumeInfo(
+				shardInfo.DiskType,
 				shardInfo.Collection,
 				needle.VolumeId(shardInfo.Id),
 				erasure_coding.ShardBits(shardInfo.EcIndexBits)))
@@ -132,16 +136,16 @@ func (t *Topology) LookupEcShards(vid needle.VolumeId) (locations *EcShardLocati
 	return
 }
 
-func (t *Topology) ListEcServersByCollection(collection string) (dataNodes []string) {
+func (t *Topology) ListEcServersByCollection(collection string) (dataNodes []pb.ServerAddress) {
 	t.ecShardMapLock.RLock()
 	defer t.ecShardMapLock.RUnlock()
 
-	dateNodeMap := make(map[string]bool)
+	dateNodeMap := make(map[pb.ServerAddress]bool)
 	for _, ecVolumeLocation := range t.ecShardMap {
 		if ecVolumeLocation.Collection == collection {
 			for _, locations := range ecVolumeLocation.Locations {
 				for _, loc := range locations {
-					dateNodeMap[string(loc.Id())] = true
+					dateNodeMap[loc.ServerAddress()] = true
 				}
 			}
 		}

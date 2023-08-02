@@ -3,13 +3,17 @@ package command
 import (
 	"fmt"
 	"io"
-	"io/ioutil"
+	"net/http"
 	"os"
 	"path"
 	"strings"
 
-	"github.com/chrislusf/seaweedfs/weed/operation"
-	"github.com/chrislusf/seaweedfs/weed/util"
+	"google.golang.org/grpc"
+
+	"github.com/seaweedfs/seaweedfs/weed/operation"
+	"github.com/seaweedfs/seaweedfs/weed/pb"
+	"github.com/seaweedfs/seaweedfs/weed/security"
+	"github.com/seaweedfs/seaweedfs/weed/util"
 )
 
 var (
@@ -42,24 +46,27 @@ var cmdDownload = &Command{
 }
 
 func runDownload(cmd *Command, args []string) bool {
+	util.LoadConfiguration("security", false)
+	grpcDialOption := security.LoadClientTLS(util.GetViper(), "grpc.client")
+
 	for _, fid := range args {
-		if e := downloadToFile(*d.server, fid, *d.dir); e != nil {
+		if e := downloadToFile(func() pb.ServerAddress { return pb.ServerAddress(*d.server) }, grpcDialOption, fid, util.ResolvePath(*d.dir)); e != nil {
 			fmt.Println("Download Error: ", fid, e)
 		}
 	}
 	return true
 }
 
-func downloadToFile(server, fileId, saveDir string) error {
-	fileUrl, lookupError := operation.LookupFileId(server, fileId)
+func downloadToFile(masterFn operation.GetMasterFn, grpcDialOption grpc.DialOption, fileId, saveDir string) error {
+	fileUrl, jwt, lookupError := operation.LookupFileId(masterFn, grpcDialOption, fileId)
 	if lookupError != nil {
 		return lookupError
 	}
-	filename, _, rc, err := util.DownloadFile(fileUrl)
+	filename, _, rc, err := util.DownloadFile(fileUrl, jwt)
 	if err != nil {
 		return err
 	}
-	defer rc.Close()
+	defer util.CloseResponse(rc)
 	if filename == "" {
 		filename = fileId
 	}
@@ -71,19 +78,18 @@ func downloadToFile(server, fileId, saveDir string) error {
 	}
 	f, err := os.OpenFile(path.Join(saveDir, filename), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.ModePerm)
 	if err != nil {
-		io.Copy(ioutil.Discard, rc)
 		return err
 	}
 	defer f.Close()
 	if isFileList {
-		content, err := ioutil.ReadAll(rc)
+		content, err := io.ReadAll(rc.Body)
 		if err != nil {
 			return err
 		}
 		fids := strings.Split(string(content), "\n")
 		for _, partId := range fids {
 			var n int
-			_, part, err := fetchContent(*d.server, partId)
+			_, part, err := fetchContent(masterFn, grpcDialOption, partId)
 			if err == nil {
 				n, err = f.Write(part)
 			}
@@ -95,7 +101,7 @@ func downloadToFile(server, fileId, saveDir string) error {
 			}
 		}
 	} else {
-		if _, err = io.Copy(f, rc); err != nil {
+		if _, err = io.Copy(f, rc.Body); err != nil {
 			return err
 		}
 
@@ -103,17 +109,17 @@ func downloadToFile(server, fileId, saveDir string) error {
 	return nil
 }
 
-func fetchContent(server string, fileId string) (filename string, content []byte, e error) {
-	fileUrl, lookupError := operation.LookupFileId(server, fileId)
+func fetchContent(masterFn operation.GetMasterFn, grpcDialOption grpc.DialOption, fileId string) (filename string, content []byte, e error) {
+	fileUrl, jwt, lookupError := operation.LookupFileId(masterFn, grpcDialOption, fileId)
 	if lookupError != nil {
 		return "", nil, lookupError
 	}
-	var rc io.ReadCloser
-	if filename, _, rc, e = util.DownloadFile(fileUrl); e != nil {
+	var rc *http.Response
+	if filename, _, rc, e = util.DownloadFile(fileUrl, jwt); e != nil {
 		return "", nil, e
 	}
-	content, e = ioutil.ReadAll(rc)
-	rc.Close()
+	defer util.CloseResponse(rc)
+	content, e = io.ReadAll(rc.Body)
 	return
 }
 

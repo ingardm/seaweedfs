@@ -13,6 +13,7 @@ func NewFullPath(dir, name string) FullPath {
 
 func (fp FullPath) DirAndName() (string, string) {
 	dir, name := filepath.Split(string(fp))
+	name = strings.ToValidUTF8(name, "?")
 	if dir == "/" {
 		return dir, name
 	}
@@ -24,19 +25,27 @@ func (fp FullPath) DirAndName() (string, string) {
 
 func (fp FullPath) Name() string {
 	_, name := filepath.Split(string(fp))
+	name = strings.ToValidUTF8(name, "?")
 	return name
 }
 
 func (fp FullPath) Child(name string) FullPath {
 	dir := string(fp)
-	if strings.HasSuffix(dir, "/") {
-		return FullPath(dir + name)
+	noPrefix := name
+	if strings.HasPrefix(name, "/") {
+		noPrefix = name[1:]
 	}
-	return FullPath(dir + "/" + name)
+	if strings.HasSuffix(dir, "/") {
+		return FullPath(dir + noPrefix)
+	}
+	return FullPath(dir + "/" + noPrefix)
 }
 
-func (fp FullPath) AsInode() uint64 {
-	return uint64(HashStringToLong(string(fp)))
+// AsInode an in-memory only inode representation
+func (fp FullPath) AsInode(unixTime int64) uint64 {
+	inode := uint64(HashStringToLong(string(fp)))
+	inode = inode + uint64(unixTime)*37
+	return inode
 }
 
 // split, but skipping the root
@@ -53,4 +62,18 @@ func Join(names ...string) string {
 
 func JoinPath(names ...string) FullPath {
 	return FullPath(Join(names...))
+}
+
+func (fp FullPath) IsUnder(other FullPath) bool {
+	if other == "/" {
+		return true
+	}
+	return strings.HasPrefix(string(fp), string(other)+"/")
+}
+
+func StringSplit(separatedValues string, sep string) []string {
+	if separatedValues == "" {
+		return nil
+	}
+	return strings.Split(separatedValues, sep)
 }

@@ -7,11 +7,11 @@ import (
 
 	"github.com/klauspost/reedsolomon"
 
-	"github.com/chrislusf/seaweedfs/weed/glog"
-	"github.com/chrislusf/seaweedfs/weed/storage/idx"
-	"github.com/chrislusf/seaweedfs/weed/storage/needle_map"
-	"github.com/chrislusf/seaweedfs/weed/storage/types"
-	"github.com/chrislusf/seaweedfs/weed/util"
+	"github.com/seaweedfs/seaweedfs/weed/glog"
+	"github.com/seaweedfs/seaweedfs/weed/storage/idx"
+	"github.com/seaweedfs/seaweedfs/weed/storage/needle_map"
+	"github.com/seaweedfs/seaweedfs/weed/storage/types"
+	"github.com/seaweedfs/seaweedfs/weed/util"
 )
 
 const (
@@ -77,6 +77,8 @@ func generateEcFiles(baseFileName string, bufferSize int, largeBlockSize int64, 
 	if err != nil {
 		return fmt.Errorf("failed to stat dat file: %v", err)
 	}
+
+	glog.V(0).Infof("encodeDatFile %s.dat size:%d", baseFileName, fi.Size())
 	err = encodeDatFile(fi.Size(), err, baseFileName, bufferSize, largeBlockSize, file, smallBlockSize)
 	if err != nil {
 		return fmt.Errorf("encodeDatFile: %v", err)
@@ -218,7 +220,7 @@ func encodeDatFile(remainingSize int64, err error, baseFileName string, bufferSi
 		processedSize += largeBlockSize * DataShardsCount
 	}
 	for remainingSize > 0 {
-		encodeData(file, enc, processedSize, smallBlockSize, buffers, outputs)
+		err = encodeData(file, enc, processedSize, smallBlockSize, buffers, outputs)
 		if err != nil {
 			return fmt.Errorf("failed to encode small chunk data: %v", err)
 		}
@@ -292,7 +294,7 @@ func readNeedleMap(baseFileName string) (*needle_map.MemDb, error) {
 	defer indexFile.Close()
 
 	cm := needle_map.NewMemDb()
-	err = idx.WalkIndexFile(indexFile, func(key types.NeedleId, offset types.Offset, size uint32) error {
+	err = idx.WalkIndexFile(indexFile, 0, func(key types.NeedleId, offset types.Offset, size types.Size) error {
 		if !offset.IsZero() && size != types.TombstoneFileSize {
 			cm.Set(key, offset, size)
 		} else {

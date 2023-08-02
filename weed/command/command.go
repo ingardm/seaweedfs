@@ -1,30 +1,43 @@
 package command
 
 import (
-	"flag"
 	"fmt"
 	"os"
 	"strings"
+
+	flag "github.com/seaweedfs/seaweedfs/weed/util/fla9"
 )
 
 var Commands = []*Command{
-	cmdBenchmark,
+	cmdAutocomplete,
+	cmdUnautocomplete,
 	cmdBackup,
+	cmdBenchmark,
 	cmdCompact,
-	cmdCopy,
 	cmdDownload,
 	cmdExport,
 	cmdFiler,
+	cmdFilerBackup,
+	cmdFilerCat,
+	cmdFilerCopy,
+	cmdFilerMetaBackup,
+	cmdFilerMetaTail,
+	cmdFilerRemoteGateway,
+	cmdFilerRemoteSynchronize,
 	cmdFilerReplicate,
+	cmdFilerSynchronize,
 	cmdFix,
+	cmdFuse,
+	cmdIam,
 	cmdMaster,
+	cmdMasterFollower,
 	cmdMount,
+	cmdMqBroker,
 	cmdS3,
-	cmdMsgBroker,
 	cmdScaffold,
 	cmdServer,
 	cmdShell,
-	cmdWatch,
+	cmdUpdate,
 	cmdUpload,
 	cmdVersion,
 	cmdVolume,

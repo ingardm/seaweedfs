@@ -1,12 +1,13 @@
-//go:generate statik -src=./static
-// install this first "go get github.com/rakyll/statik"
-
 package main
 
 import (
-	"flag"
+	"embed"
 	"fmt"
+	weed_server "github.com/seaweedfs/seaweedfs/weed/server"
+	"github.com/seaweedfs/seaweedfs/weed/util"
+	flag "github.com/seaweedfs/seaweedfs/weed/util/fla9"
 	"io"
+	"io/fs"
 	"math/rand"
 	"os"
 	"strings"
@@ -16,8 +17,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/chrislusf/seaweedfs/weed/command"
-	"github.com/chrislusf/seaweedfs/weed/glog"
+	"github.com/seaweedfs/seaweedfs/weed/command"
+	"github.com/seaweedfs/seaweedfs/weed/glog"
 )
 
 var IsDebug *bool
@@ -35,10 +36,25 @@ func setExitStatus(n int) {
 	exitMu.Unlock()
 }
 
+//go:embed static
+var static embed.FS
+
+func init() {
+	weed_server.StaticFS, _ = fs.Sub(static, "static")
+
+	flag.Var(&util.ConfigurationFileDirectory, "config_dir", "directory with toml configuration files")
+}
+
 func main() {
-	glog.MaxSize = 1024 * 1024 * 32
+	glog.MaxSize = 1024 * 1024 * 10
+	glog.MaxFileCount = 5
 	rand.Seed(time.Now().UnixNano())
 	flag.Usage = usage
+
+	if command.AutocompleteMain(commands) {
+		return
+	}
+
 	flag.Parse()
 
 	args := flag.Args()

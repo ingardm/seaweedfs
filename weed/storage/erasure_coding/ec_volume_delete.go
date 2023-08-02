@@ -5,14 +5,14 @@ import (
 	"io"
 	"os"
 
-	"github.com/chrislusf/seaweedfs/weed/storage/types"
-	"github.com/chrislusf/seaweedfs/weed/util"
+	"github.com/seaweedfs/seaweedfs/weed/storage/types"
+	"github.com/seaweedfs/seaweedfs/weed/util"
 )
 
 var (
 	MarkNeedleDeleted = func(file *os.File, offset int64) error {
 		b := make([]byte, types.SizeSize)
-		util.Uint32toBytes(b, types.TombstoneFileSize)
+		types.SizeToBytes(b, types.TombstoneFileSize)
 		n, err := file.WriteAt(b, offset+types.NeedleIdSize+types.OffsetSize)
 		if err != nil {
 			return fmt.Errorf("sorted needle write error: %v", err)

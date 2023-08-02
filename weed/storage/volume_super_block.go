@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/chrislusf/seaweedfs/weed/glog"
-	"github.com/chrislusf/seaweedfs/weed/storage/backend"
-	"github.com/chrislusf/seaweedfs/weed/storage/needle"
-	"github.com/chrislusf/seaweedfs/weed/storage/super_block"
+	"github.com/seaweedfs/seaweedfs/weed/glog"
+	"github.com/seaweedfs/seaweedfs/weed/storage/backend"
+	"github.com/seaweedfs/seaweedfs/weed/storage/needle"
+	"github.com/seaweedfs/seaweedfs/weed/storage/super_block"
 )
 
 func (v *Volume) maybeWriteSuperBlock() error {
@@ -26,8 +26,10 @@ func (v *Volume) maybeWriteSuperBlock() error {
 			if dataFile, e = os.Create(v.DataBackend.Name()); e == nil {
 				v.DataBackend = backend.NewDiskFile(dataFile)
 				if _, e = v.DataBackend.WriteAt(v.SuperBlock.Bytes(), 0); e == nil {
+					v.noWriteLock.Lock()
 					v.noWriteOrDelete = false
 					v.noWriteCanDelete = false
+					v.noWriteLock.Unlock()
 				}
 			}
 		}

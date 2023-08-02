@@ -1,5 +1,7 @@
 package seaweed.hdfs;
 
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FSInputStream;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -7,30 +9,42 @@ import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import seaweedfs.client.FilerClient;
-import seaweedfs.client.FilerGrpcClient;
-import seaweedfs.client.FilerProto;
-import seaweedfs.client.SeaweedRead;
+import seaweedfs.client.*;
 
 import java.io.FileNotFoundException;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
+import static seaweed.hdfs.SeaweedFileSystem.*;
+
 public class SeaweedFileSystemStore {
 
     private static final Logger LOG = LoggerFactory.getLogger(SeaweedFileSystemStore.class);
 
-    private FilerGrpcClient filerGrpcClient;
     private FilerClient filerClient;
+    private Configuration conf;
 
-    public SeaweedFileSystemStore(String host, int port) {
-        int grpcPort = 10000 + port;
-        filerGrpcClient = new FilerGrpcClient(host, grpcPort);
-        filerClient = new FilerClient(filerGrpcClient);
+    public SeaweedFileSystemStore(String host, int port, int grpcPort, Configuration conf) {
+        filerClient = new FilerClient(host, port, grpcPort);
+        this.conf = conf;
+        String volumeServerAccessMode = this.conf.get(FS_SEAWEED_VOLUME_SERVER_ACCESS, "direct");
+        if (volumeServerAccessMode.equals("publicUrl")) {
+            filerClient.setAccessVolumeServerByPublicUrl();
+        } else if (volumeServerAccessMode.equals("filerProxy")) {
+            filerClient.setAccessVolumeServerByFilerProxy();
+        }
+
+    }
+
+    public void close() {
+        try {
+            this.filerClient.shutdown();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
     }
 
     public static String getParentDirectory(Path path) {
@@ -61,7 +75,7 @@ public class SeaweedFileSystemStore {
         );
     }
 
-    public FileStatus[] listEntries(final Path path) {
+    public FileStatus[] listEntries(final Path path) throws IOException {
         LOG.debug("listEntries path: {}", path);
 
         FileStatus pathStatus = getFileStatus(path);
@@ -89,11 +103,11 @@ public class SeaweedFileSystemStore {
 
     }
 
-    public FileStatus getFileStatus(final Path path) {
+    public FileStatus getFileStatus(final Path path) throws IOException {
 
         FilerProto.Entry entry = lookupEntry(path);
         if (entry == null) {
-            return null;
+            throw new FileNotFoundException("File does not exist: " + path);
         }
         LOG.debug("doGetFileStatus path:{} entry:{}", path, entry);
 
@@ -123,10 +137,10 @@ public class SeaweedFileSystemStore {
 
     private FileStatus doGetFileStatus(Path path, FilerProto.Entry entry) {
         FilerProto.FuseAttributes attributes = entry.getAttributes();
-        long length = SeaweedRead.totalSize(entry.getChunksList());
+        long length = SeaweedRead.fileSize(entry);
         boolean isDir = entry.getIsDirectory();
         int block_replication = 1;
-        int blocksize = 512;
+        int blocksize = this.conf.getInt(FS_SEAWEED_BUFFER_SIZE, FS_SEAWEED_DEFAULT_BUFFER_SIZE);
         long modification_time = attributes.getMtime() * 1000; // milliseconds
         long access_time = 0;
         FsPermission permission = FsPermission.createImmutable((short) attributes.getFileMode());
@@ -136,7 +150,7 @@ public class SeaweedFileSystemStore {
             modification_time, access_time, permission, owner, group, null, path);
     }
 
-    private FilerProto.Entry lookupEntry(Path path) {
+    public FilerProto.Entry lookupEntry(Path path) {
 
         return filerClient.lookupEntry(getParentDirectory(path), path.getName());
 
@@ -182,10 +196,10 @@ public class SeaweedFileSystemStore {
             if (existingEntry != null) {
                 entry = FilerProto.Entry.newBuilder();
                 entry.mergeFrom(existingEntry);
+                entry.clearContent();
                 entry.getAttributesBuilder().setMtime(now);
                 LOG.debug("createFile merged entry path:{} entry:{} from:{}", path, entry, existingEntry);
-                writePosition = SeaweedRead.totalSize(existingEntry.getChunksList());
-                replication = existingEntry.getAttributes().getReplication();
+                writePosition = SeaweedRead.fileSize(existingEntry);
             }
         }
         if (entry == null) {
@@ -194,37 +208,33 @@ public class SeaweedFileSystemStore {
                 .setIsDirectory(false)
                 .setAttributes(FilerProto.FuseAttributes.newBuilder()
                     .setFileMode(permissionToMode(permission, false))
-                    .setReplication(replication)
                     .setCrtime(now)
                     .setMtime(now)
                     .setUserName(userGroupInformation.getUserName())
                     .clearGroupName()
                     .addAllGroupName(Arrays.asList(userGroupInformation.getGroupNames()))
                 );
+            SeaweedWrite.writeMeta(filerClient, getParentDirectory(path), entry);
         }
 
-        return new SeaweedOutputStream(filerGrpcClient, path, entry, writePosition, bufferSize, replication);
+        return new SeaweedHadoopOutputStream(filerClient, path.toString(), entry, writePosition, bufferSize, replication);
 
     }
 
-    public InputStream openFileForRead(final Path path, FileSystem.Statistics statistics,
-                                       int bufferSize) throws IOException {
+    public FSInputStream openFileForRead(final Path path, FileSystem.Statistics statistics) throws IOException {
 
-        LOG.debug("openFileForRead path:{} bufferSize:{}", path, bufferSize);
+        LOG.debug("openFileForRead path:{}", path);
 
-        int readAheadQueueDepth = 2;
         FilerProto.Entry entry = lookupEntry(path);
 
         if (entry == null) {
             throw new FileNotFoundException("read non-exist file " + path);
         }
 
-        return new SeaweedInputStream(filerGrpcClient,
+        return new SeaweedHadoopInputStream(filerClient,
             statistics,
             path.toUri().getPath(),
-            entry,
-            bufferSize,
-            readAheadQueueDepth);
+            entry);
     }
 
     public void setOwner(Path path, String owner, String group) {

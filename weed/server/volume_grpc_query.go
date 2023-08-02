@@ -1,11 +1,11 @@
 package weed_server
 
 import (
-	"github.com/chrislusf/seaweedfs/weed/glog"
-	"github.com/chrislusf/seaweedfs/weed/operation"
-	"github.com/chrislusf/seaweedfs/weed/pb/volume_server_pb"
-	"github.com/chrislusf/seaweedfs/weed/query/json"
-	"github.com/chrislusf/seaweedfs/weed/storage/needle"
+	"github.com/seaweedfs/seaweedfs/weed/glog"
+	"github.com/seaweedfs/seaweedfs/weed/operation"
+	"github.com/seaweedfs/seaweedfs/weed/pb/volume_server_pb"
+	"github.com/seaweedfs/seaweedfs/weed/query/json"
+	"github.com/seaweedfs/seaweedfs/weed/storage/needle"
 	"github.com/tidwall/gjson"
 )
 
@@ -24,7 +24,7 @@ func (vs *VolumeServer) Query(req *volume_server_pb.QueryRequest, stream volume_
 		n.ParsePath(id_cookie)
 
 		cookie := n.Cookie
-		if _, err := vs.store.ReadVolumeNeedle(volumeId, n); err != nil {
+		if _, err := vs.store.ReadVolumeNeedle(volumeId, n, nil, nil); err != nil {
 			glog.V(0).Infof("volume query failed to read fid %s: %v", fid, err)
 			return err
 		}

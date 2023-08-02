@@ -3,18 +3,21 @@ package weed_server
 import (
 	"context"
 	"fmt"
+	"github.com/seaweedfs/seaweedfs/weed/pb"
+	"github.com/seaweedfs/seaweedfs/weed/pb/master_pb"
 	"math/rand"
 	"net/http"
 	"strconv"
 
-	"github.com/chrislusf/seaweedfs/weed/glog"
-	"github.com/chrislusf/seaweedfs/weed/operation"
-	"github.com/chrislusf/seaweedfs/weed/pb/volume_server_pb"
-	"github.com/chrislusf/seaweedfs/weed/storage/backend/memory_map"
-	"github.com/chrislusf/seaweedfs/weed/storage/needle"
-	"github.com/chrislusf/seaweedfs/weed/storage/super_block"
-	"github.com/chrislusf/seaweedfs/weed/topology"
-	"github.com/chrislusf/seaweedfs/weed/util"
+	"github.com/seaweedfs/seaweedfs/weed/glog"
+	"github.com/seaweedfs/seaweedfs/weed/operation"
+	"github.com/seaweedfs/seaweedfs/weed/pb/volume_server_pb"
+	"github.com/seaweedfs/seaweedfs/weed/storage/backend/memory_map"
+	"github.com/seaweedfs/seaweedfs/weed/storage/needle"
+	"github.com/seaweedfs/seaweedfs/weed/storage/super_block"
+	"github.com/seaweedfs/seaweedfs/weed/storage/types"
+	"github.com/seaweedfs/seaweedfs/weed/topology"
+	"github.com/seaweedfs/seaweedfs/weed/util"
 )
 
 func (ms *MasterServer) collectionDeleteHandler(w http.ResponseWriter, r *http.Request) {
@@ -25,7 +28,7 @@ func (ms *MasterServer) collectionDeleteHandler(w http.ResponseWriter, r *http.R
 		return
 	}
 	for _, server := range collection.ListVolumeServers() {
-		err := operation.WithVolumeServerClient(server.Url(), ms.grpcDialOption, func(client volume_server_pb.VolumeServerClient) error {
+		err := operation.WithVolumeServerClient(false, server.ServerAddress(), ms.grpcDialOption, func(client volume_server_pb.VolumeServerClient) error {
 			_, deleteErr := client.DeleteCollection(context.Background(), &volume_server_pb.DeleteCollectionRequest{
 				Collection: collection.Name,
 			})
@@ -45,7 +48,7 @@ func (ms *MasterServer) collectionDeleteHandler(w http.ResponseWriter, r *http.R
 func (ms *MasterServer) dirStatusHandler(w http.ResponseWriter, r *http.Request) {
 	m := make(map[string]interface{})
 	m["Version"] = util.Version()
-	m["Topology"] = ms.Topo.ToMap()
+	m["Topology"] = ms.Topo.ToInfo()
 	writeJsonQuiet(w, r, http.StatusOK, m)
 }
 
@@ -62,7 +65,7 @@ func (ms *MasterServer) volumeVacuumHandler(w http.ResponseWriter, r *http.Reque
 		}
 	}
 	// glog.Infoln("garbageThreshold =", gcThreshold)
-	ms.Topo.Vacuum(ms.grpcDialOption, gcThreshold, ms.preallocateSize)
+	ms.Topo.Vacuum(ms.grpcDialOption, gcThreshold, 0, "", ms.preallocateSize)
 	ms.dirStatusHandler(w, r)
 }
 
@@ -73,12 +76,15 @@ func (ms *MasterServer) volumeGrowHandler(w http.ResponseWriter, r *http.Request
 		writeJsonError(w, r, http.StatusNotAcceptable, err)
 		return
 	}
+	glog.V(0).Infof("volumeGrowHandler received %v from %v", option.String(), r.RemoteAddr)
 
 	if count, err = strconv.Atoi(r.FormValue("count")); err == nil {
-		if ms.Topo.FreeSpace() < int64(count*option.ReplicaPlacement.GetCopyCount()) {
-			err = fmt.Errorf("only %d volumes left, not enough for %d", ms.Topo.FreeSpace(), count*option.ReplicaPlacement.GetCopyCount())
+		if ms.Topo.AvailableSpaceFor(option) < int64(count*option.ReplicaPlacement.GetCopyCount()) {
+			err = fmt.Errorf("only %d volumes left, not enough for %d", ms.Topo.AvailableSpaceFor(option), count*option.ReplicaPlacement.GetCopyCount())
 		} else {
-			count, err = ms.vg.GrowByCountAndType(ms.grpcDialOption, count, option, ms.Topo)
+			var newVidLocations []*master_pb.VolumeLocation
+			newVidLocations, err = ms.vg.GrowByCountAndType(ms.grpcDialOption, count, option, ms.Topo)
+			count = len(newVidLocations)
 		}
 	} else {
 		err = fmt.Errorf("can not parse parameter count %s", r.FormValue("count"))
@@ -110,34 +116,23 @@ func (ms *MasterServer) redirectHandler(w http.ResponseWriter, r *http.Request) 
 		} else {
 			url = util.NormalizeUrl(loc.PublicUrl) + r.URL.Path
 		}
-		http.Redirect(w, r, url, http.StatusMovedPermanently)
+		http.Redirect(w, r, url, http.StatusPermanentRedirect)
 	} else {
 		writeJsonError(w, r, http.StatusNotFound, fmt.Errorf("volume id %s not found: %s", vid, location.Error))
 	}
 }
 
-func (ms *MasterServer) selfUrl(r *http.Request) string {
-	if r.Host != "" {
-		return r.Host
-	}
-	return "localhost:" + strconv.Itoa(ms.option.Port)
-}
 func (ms *MasterServer) submitFromMasterServerHandler(w http.ResponseWriter, r *http.Request) {
 	if ms.Topo.IsLeader() {
-		submitForClientHandler(w, r, ms.selfUrl(r), ms.grpcDialOption)
+		submitForClientHandler(w, r, func() pb.ServerAddress { return ms.option.Master }, ms.grpcDialOption)
 	} else {
 		masterUrl, err := ms.Topo.Leader()
 		if err != nil {
 			writeJsonError(w, r, http.StatusInternalServerError, err)
 		} else {
-			submitForClientHandler(w, r, masterUrl, ms.grpcDialOption)
+			submitForClientHandler(w, r, func() pb.ServerAddress { return masterUrl }, ms.grpcDialOption)
 		}
 	}
-}
-
-func (ms *MasterServer) HasWritableVolume(option *topology.VolumeGrowOption) bool {
-	vl := ms.Topo.GetVolumeLayout(option.Collection, option.ReplicaPlacement, option.Ttl)
-	return vl.GetActiveVolumeCount(option) > 0
 }
 
 func (ms *MasterServer) getVolumeGrowOption(r *http.Request) (*topology.VolumeGrowOption, error) {
@@ -157,6 +152,7 @@ func (ms *MasterServer) getVolumeGrowOption(r *http.Request) (*topology.VolumeGr
 	if err != nil {
 		return nil, err
 	}
+	diskType := types.ToDiskType(r.FormValue("disk"))
 
 	preallocate := ms.preallocateSize
 	if r.FormValue("preallocate") != "" {
@@ -169,7 +165,8 @@ func (ms *MasterServer) getVolumeGrowOption(r *http.Request) (*topology.VolumeGr
 		Collection:         r.FormValue("collection"),
 		ReplicaPlacement:   replicaPlacement,
 		Ttl:                ttl,
-		Prealloacte:        preallocate,
+		DiskType:           diskType,
+		Preallocate:        preallocate,
 		DataCenter:         r.FormValue("dataCenter"),
 		Rack:               r.FormValue("rack"),
 		DataNode:           r.FormValue("dataNode"),

@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/seaweedfs/seaweedfs/weed/pb"
+
 	"google.golang.org/grpc"
 
-	"github.com/chrislusf/seaweedfs/weed/operation"
-	"github.com/chrislusf/seaweedfs/weed/pb/master_pb"
-	"github.com/chrislusf/seaweedfs/weed/pb/volume_server_pb"
-	"github.com/chrislusf/seaweedfs/weed/storage/needle"
+	"github.com/seaweedfs/seaweedfs/weed/operation"
+	"github.com/seaweedfs/seaweedfs/weed/pb/master_pb"
+	"github.com/seaweedfs/seaweedfs/weed/pb/volume_server_pb"
+	"github.com/seaweedfs/seaweedfs/weed/storage/needle"
 )
 
 func init() {
@@ -33,7 +35,6 @@ func (c *commandVolumeTierDownload) Help() string {
 
 	e.g.:
 	volume.tier.download -volumeId=7
-	volume.tier.download -volumeId=7
 
 	This command will download the dat file of a volume from a remote tier to a volume server in local cluster.
 
@@ -42,10 +43,6 @@ func (c *commandVolumeTierDownload) Help() string {
 
 func (c *commandVolumeTierDownload) Do(args []string, commandEnv *CommandEnv, writer io.Writer) (err error) {
 
-	if err = commandEnv.confirmIsLocked(); err != nil {
-		return
-	}
-
 	tierCommand := flag.NewFlagSet(c.Name(), flag.ContinueOnError)
 	volumeId := tierCommand.Int("volumeId", 0, "the volume id")
 	collection := tierCommand.String("collection", "", "the collection name")
@@ -53,10 +50,14 @@ func (c *commandVolumeTierDownload) Do(args []string, commandEnv *CommandEnv, wr
 		return nil
 	}
 
+	if err = commandEnv.confirmIsLocked(args); err != nil {
+		return
+	}
+
 	vid := needle.VolumeId(*volumeId)
 
 	// collect topology information
-	topologyInfo, err := collectTopologyInfo(commandEnv)
+	topologyInfo, _, err := collectTopologyInfo(commandEnv, 0)
 	if err != nil {
 		return err
 	}
@@ -86,9 +87,11 @@ func collectRemoteVolumes(topoInfo *master_pb.TopologyInfo, selectedCollection s
 
 	vidMap := make(map[uint32]bool)
 	eachDataNode(topoInfo, func(dc string, rack RackId, dn *master_pb.DataNodeInfo) {
-		for _, v := range dn.VolumeInfos {
-			if v.Collection == selectedCollection && v.RemoteStorageKey != "" && v.RemoteStorageName != "" {
-				vidMap[v.Id] = true
+		for _, diskInfo := range dn.DiskInfos {
+			for _, v := range diskInfo.VolumeInfos {
+				if v.Collection == selectedCollection && v.RemoteStorageKey != "" && v.RemoteStorageName != "" {
+					vidMap[v.Id] = true
+				}
 			}
 		}
 	})
@@ -102,7 +105,7 @@ func collectRemoteVolumes(topoInfo *master_pb.TopologyInfo, selectedCollection s
 
 func doVolumeTierDownload(commandEnv *CommandEnv, writer io.Writer, collection string, vid needle.VolumeId) (err error) {
 	// find volume location
-	locations, found := commandEnv.MasterClient.GetLocations(uint32(vid))
+	locations, found := commandEnv.MasterClient.GetLocationsClone(uint32(vid))
 	if !found {
 		return fmt.Errorf("volume %d not found", vid)
 	}
@@ -110,7 +113,7 @@ func doVolumeTierDownload(commandEnv *CommandEnv, writer io.Writer, collection s
 	// TODO parallelize this
 	for _, loc := range locations {
 		// copy the .dat file from remote tier to local
-		err = downloadDatFromRemoteTier(commandEnv.option.GrpcDialOption, writer, needle.VolumeId(vid), collection, loc.Url)
+		err = downloadDatFromRemoteTier(commandEnv.option.GrpcDialOption, writer, needle.VolumeId(vid), collection, loc.ServerAddress())
 		if err != nil {
 			return fmt.Errorf("download dat file for volume %d to %s: %v", vid, loc.Url, err)
 		}
@@ -119,9 +122,9 @@ func doVolumeTierDownload(commandEnv *CommandEnv, writer io.Writer, collection s
 	return nil
 }
 
-func downloadDatFromRemoteTier(grpcDialOption grpc.DialOption, writer io.Writer, volumeId needle.VolumeId, collection string, targetVolumeServer string) error {
+func downloadDatFromRemoteTier(grpcDialOption grpc.DialOption, writer io.Writer, volumeId needle.VolumeId, collection string, targetVolumeServer pb.ServerAddress) error {
 
-	err := operation.WithVolumeServerClient(targetVolumeServer, grpcDialOption, func(volumeServerClient volume_server_pb.VolumeServerClient) error {
+	err := operation.WithVolumeServerClient(true, targetVolumeServer, grpcDialOption, func(volumeServerClient volume_server_pb.VolumeServerClient) error {
 		stream, downloadErr := volumeServerClient.VolumeTierMoveDatFromRemote(context.Background(), &volume_server_pb.VolumeTierMoveDatFromRemoteRequest{
 			VolumeId:   uint32(volumeId),
 			Collection: collection,

@@ -4,23 +4,25 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/seaweedfs/seaweedfs/weed/replication/repl_util"
 	"net/url"
 	"strings"
 
 	"github.com/Azure/azure-storage-blob-go/azblob"
-	"github.com/chrislusf/seaweedfs/weed/filer2"
-	"github.com/chrislusf/seaweedfs/weed/glog"
-	"github.com/chrislusf/seaweedfs/weed/pb/filer_pb"
-	"github.com/chrislusf/seaweedfs/weed/replication/sink"
-	"github.com/chrislusf/seaweedfs/weed/replication/source"
-	"github.com/chrislusf/seaweedfs/weed/util"
+	"github.com/seaweedfs/seaweedfs/weed/filer"
+	"github.com/seaweedfs/seaweedfs/weed/glog"
+	"github.com/seaweedfs/seaweedfs/weed/pb/filer_pb"
+	"github.com/seaweedfs/seaweedfs/weed/replication/sink"
+	"github.com/seaweedfs/seaweedfs/weed/replication/source"
+	"github.com/seaweedfs/seaweedfs/weed/util"
 )
 
 type AzureSink struct {
-	containerURL azblob.ContainerURL
-	container    string
-	dir          string
-	filerSource  *source.FilerSource
+	containerURL  azblob.ContainerURL
+	container     string
+	dir           string
+	filerSource   *source.FilerSource
+	isIncremental bool
 }
 
 func init() {
@@ -35,7 +37,12 @@ func (g *AzureSink) GetSinkToDirectory() string {
 	return g.dir
 }
 
+func (g *AzureSink) IsIncremental() bool {
+	return g.isIncremental
+}
+
 func (g *AzureSink) Initialize(configuration util.Configuration, prefix string) error {
+	g.isIncremental = configuration.GetBool(prefix + "is_incremental")
 	return g.initialize(
 		configuration.GetString(prefix+"account_name"),
 		configuration.GetString(prefix+"account_key"),
@@ -55,7 +62,7 @@ func (g *AzureSink) initialize(accountName, accountKey, container, dir string) e
 	// Use your Storage account's name and key to create a credential object.
 	credential, err := azblob.NewSharedKeyCredential(accountName, accountKey)
 	if err != nil {
-		glog.Fatalf("failed to create Azure credential with account name:%s key:%s", accountName, accountKey)
+		glog.Fatalf("failed to create Azure credential with account name:%s: %v", accountName, err)
 	}
 
 	// Create a request pipeline that is used to process HTTP(S) requests and responses.
@@ -70,7 +77,7 @@ func (g *AzureSink) initialize(accountName, accountKey, container, dir string) e
 	return nil
 }
 
-func (g *AzureSink) DeleteEntry(key string, isDirectory, deleteIncludeChunks bool) error {
+func (g *AzureSink) DeleteEntry(key string, isDirectory, deleteIncludeChunks bool, signatures []int32) error {
 
 	key = cleanKey(key)
 
@@ -87,7 +94,7 @@ func (g *AzureSink) DeleteEntry(key string, isDirectory, deleteIncludeChunks boo
 
 }
 
-func (g *AzureSink) CreateEntry(key string, entry *filer_pb.Entry) error {
+func (g *AzureSink) CreateEntry(key string, entry *filer_pb.Entry, signatures []int32) error {
 
 	key = cleanKey(key)
 
@@ -95,47 +102,38 @@ func (g *AzureSink) CreateEntry(key string, entry *filer_pb.Entry) error {
 		return nil
 	}
 
-	totalSize := filer2.TotalSize(entry.Chunks)
-	chunkViews := filer2.ViewFromChunks(entry.Chunks, 0, int64(totalSize))
+	totalSize := filer.FileSize(entry)
+	chunkViews := filer.ViewFromChunks(g.filerSource.LookupFileId, entry.GetChunks(), 0, int64(totalSize))
 
 	// Create a URL that references a to-be-created blob in your
 	// Azure Storage account's container.
 	appendBlobURL := g.containerURL.NewAppendBlobURL(key)
 
-	_, err := appendBlobURL.Create(context.Background(), azblob.BlobHTTPHeaders{}, azblob.Metadata{}, azblob.BlobAccessConditions{})
+	_, err := appendBlobURL.Create(context.Background(), azblob.BlobHTTPHeaders{}, azblob.Metadata{}, azblob.BlobAccessConditions{}, azblob.BlobTagsMap{}, azblob.ClientProvidedKeyOptions{}, azblob.ImmutabilityPolicyOptions{})
 	if err != nil {
 		return err
 	}
 
-	for _, chunk := range chunkViews {
+	writeFunc := func(data []byte) error {
+		_, writeErr := appendBlobURL.AppendBlock(context.Background(), bytes.NewReader(data), azblob.AppendBlobAccessConditions{}, nil, azblob.ClientProvidedKeyOptions{})
+		return writeErr
+	}
 
-		fileUrl, err := g.filerSource.LookupFileId(chunk.FileId)
-		if err != nil {
-			return err
-		}
+	if len(entry.Content) > 0 {
+		return writeFunc(entry.Content)
+	}
 
-		var writeErr error
-		readErr := util.ReadUrlAsStream(fileUrl, nil, false, chunk.IsFullChunk(), chunk.Offset, int(chunk.Size), func(data []byte) {
-			_, writeErr = appendBlobURL.AppendBlock(context.Background(), bytes.NewReader(data), azblob.AppendBlobAccessConditions{}, nil)
-		})
-
-		if readErr != nil {
-			return readErr
-		}
-		if writeErr != nil {
-			return writeErr
-		}
-
+	if err := repl_util.CopyFromChunkViews(chunkViews, g.filerSource, writeFunc); err != nil {
+		return err
 	}
 
 	return nil
 
 }
 
-func (g *AzureSink) UpdateEntry(key string, oldEntry *filer_pb.Entry, newParentPath string, newEntry *filer_pb.Entry, deleteIncludeChunks bool) (foundExistingEntry bool, err error) {
+func (g *AzureSink) UpdateEntry(key string, oldEntry *filer_pb.Entry, newParentPath string, newEntry *filer_pb.Entry, deleteIncludeChunks bool, signatures []int32) (foundExistingEntry bool, err error) {
 	key = cleanKey(key)
-	// TODO improve efficiency
-	return false, nil
+	return true, g.CreateEntry(key, newEntry, signatures)
 }
 
 func cleanKey(key string) string {

@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chrislusf/seaweedfs/weed/pb/filer_pb"
+	"github.com/seaweedfs/seaweedfs/weed/pb/filer_pb"
 )
 
 func TestNewLogBufferFirstBuffer(t *testing.T) {
-	lb := NewLogBuffer(time.Minute, func(startTime, stopTime time.Time, buf []byte) {
+	lb := NewLogBuffer("test", time.Minute, func(startTime, stopTime time.Time, buf []byte) {
 
 	}, func() {
 
@@ -23,11 +23,11 @@ func TestNewLogBufferFirstBuffer(t *testing.T) {
 	var buf = make([]byte, messageSize)
 	for i := 0; i < messageCount; i++ {
 		rand.Read(buf)
-		lb.AddToBuffer(nil, buf)
+		lb.AddToBuffer(nil, buf, 0)
 	}
 
 	receivedmessageCount := 0
-	lb.LoopProcessLogData(startTime, func() bool {
+	lb.LoopProcessLogData("test", startTime, 0, func() bool {
 		// stop if no more messages
 		return false
 	}, func(logEntry *filer_pb.LogEntry) error {

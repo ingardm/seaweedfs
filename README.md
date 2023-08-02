@@ -1,23 +1,25 @@
 # SeaweedFS
 
 
-[![Build Status](https://travis-ci.org/chrislusf/seaweedfs.svg?branch=master)](https://travis-ci.org/chrislusf/seaweedfs)
-[![GoDoc](https://godoc.org/github.com/chrislusf/seaweedfs/weed?status.svg)](https://godoc.org/github.com/chrislusf/seaweedfs/weed)
-[![Wiki](https://img.shields.io/badge/docs-wiki-blue.svg)](https://github.com/chrislusf/seaweedfs/wiki)
-[![Docker Pulls](https://img.shields.io/docker/pulls/chrislusf/seaweedfs.svg?maxAge=604800)](https://hub.docker.com/r/chrislusf/seaweedfs/)
+[![Slack](https://img.shields.io/badge/slack-purple)](https://join.slack.com/t/seaweedfs/shared_invite/enQtMzI4MTMwMjU2MzA3LTEyYzZmZWYzOGQ3MDJlZWMzYmI0OTE4OTJiZjJjODBmMzUxNmYwODg0YjY3MTNlMjBmZDQ1NzQ5NDJhZWI2ZmY)
+[![Twitter](https://img.shields.io/twitter/follow/seaweedfs.svg?style=social&label=Follow)](https://twitter.com/intent/follow?screen_name=seaweedfs)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/seaweedfs/seaweedfs/go.yml)](https://github.com/seaweedfs/seaweedfs/actions/workflows/go.yml)
+[![GoDoc](https://godoc.org/github.com/seaweedfs/seaweedfs/weed?status.svg)](https://godoc.org/github.com/seaweedfs/seaweedfs/weed)
+[![Wiki](https://img.shields.io/badge/docs-wiki-blue.svg)](https://github.com/seaweedfs/seaweedfs/wiki)
+[![Docker Pulls](https://img.shields.io/docker/pulls/chrislusf/seaweedfs?maxAge=4800)](https://hub.docker.com/r/chrislusf/seaweedfs/)
+[![SeaweedFS on Maven Central](https://img.shields.io/maven-central/v/com.github.chrislusf/seaweedfs-client)](https://search.maven.org/search?q=g:com.github.chrislusf)
+[![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/seaweedfs)](https://artifacthub.io/packages/search?repo=seaweedfs)
 
-![SeaweedFS Logo](https://raw.githubusercontent.com/chrislusf/seaweedfs/master/note/seaweedfs.png)
+![SeaweedFS Logo](https://raw.githubusercontent.com/seaweedfs/seaweedfs/master/note/seaweedfs.png)
 
-<h2 align="center">Supporting SeaweedFS</h2>
+<h2 align="center"><a href="https://www.patreon.com/seaweedfs">Sponsor SeaweedFS via Patreon</a></h2>
 
 SeaweedFS is an independent Apache-licensed open source project with its ongoing development made
-possible entirely thanks to the support of these awesome [backers](https://github.com/chrislusf/seaweedfs/blob/master/backers.md).
+possible entirely thanks to the support of these awesome [backers](https://github.com/seaweedfs/seaweedfs/blob/master/backers.md).
 If you'd like to grow SeaweedFS even stronger, please consider joining our
 <a href="https://www.patreon.com/seaweedfs">sponsors on Patreon</a>.
 
 Your support will be really appreciated by me and other supporters!
-
-<h3 align="center"><a href="https://www.patreon.com/seaweedfs">Sponsor SeaweedFS via Patreon</a></h3>
 
 <!--
 <h4 align="center">Platinum</h4>
@@ -27,117 +29,164 @@ Your support will be really appreciated by me and other supporters!
     Add your name or icon here
   </a>
 </p>
-
-<h4 align="center">Gold</h4>
-
-<table>
-  <tbody>
-    <tr>
-      <td align="center" valign="middle">
-        <a href="" target="_blank">
-          Add your name or icon here
-        </a>
-      </td>
-    </tr>
-    <tr></tr>
-  </tbody>
-</table>
-
 -->
+
+### Gold Sponsors
+[![nodion](https://raw.githubusercontent.com/seaweedfs/seaweedfs/master/note/sponsor_nodion.png)](https://www.nodion.com)
+[![piknik](https://raw.githubusercontent.com/seaweedfs/seaweedfs/master/note/piknik.png)](https://www.piknik.com)
 
 ---
 
-
-- [Download Binaries for different platforms](https://github.com/chrislusf/seaweedfs/releases/latest)
+- [Download Binaries for different platforms](https://github.com/seaweedfs/seaweedfs/releases/latest)
 - [SeaweedFS on Slack](https://join.slack.com/t/seaweedfs/shared_invite/enQtMzI4MTMwMjU2MzA3LTEyYzZmZWYzOGQ3MDJlZWMzYmI0OTE4OTJiZjJjODBmMzUxNmYwODg0YjY3MTNlMjBmZDQ1NzQ5NDJhZWI2ZmY)
 - [SeaweedFS on Twitter](https://twitter.com/SeaweedFS)
+- [SeaweedFS on Telegram](https://t.me/Seaweedfs) 
+- [SeaweedFS on Reddit](https://www.reddit.com/r/SeaweedFS/)
 - [SeaweedFS Mailing List](https://groups.google.com/d/forum/seaweedfs)
-- [Wiki Documentation](https://github.com/chrislusf/seaweedfs/wiki)
-- [SeaweedFS Introduction Slides](https://www.slideshare.net/chrislusf/seaweedfs-introduction)
+- [Wiki Documentation](https://github.com/seaweedfs/seaweedfs/wiki)
+- [SeaweedFS White Paper](https://github.com/seaweedfs/seaweedfs/wiki/SeaweedFS_Architecture.pdf)
+- [SeaweedFS Introduction Slides 2021.5](https://docs.google.com/presentation/d/1DcxKWlINc-HNCjhYeERkpGXXm6nTCES8mi2W5G0Z4Ts/edit?usp=sharing)
+- [SeaweedFS Introduction Slides 2019.3](https://www.slideshare.net/chrislusf/seaweedfs-introduction)
 
 Table of Contents
 =================
 
+* [Quick Start](#quick-start)
+    * [Quick Start for S3 API on Docker](#quick-start-for-s3-api-on-docker)
+    * [Quick Start with Single Binary](#quick-start-with-single-binary)
+    * [Quick Start SeaweedFS S3 on AWS](#quick-start-seaweedfs-s3-on-aws)
 * [Introduction](#introduction)
 * [Features](#features)
     * [Additional Features](#additional-features)
     * [Filer Features](#filer-features)
-* [Example Usage](#example-usage)
-* [Architecture](#architecture)
+* [Example: Using Seaweed Object Store](#example-using-seaweed-object-store)
+* [Architecture](#object-store-architecture)
 * [Compared to Other File Systems](#compared-to-other-file-systems)
     * [Compared to HDFS](#compared-to-hdfs)
     * [Compared to GlusterFS, Ceph](#compared-to-glusterfs-ceph)
     * [Compared to GlusterFS](#compared-to-glusterfs)
     * [Compared to Ceph](#compared-to-ceph)
+    * [Compared to Minio](#compared-to-minio)
 * [Dev Plan](#dev-plan)
 * [Installation Guide](#installation-guide)
 * [Disk Related Topics](#disk-related-topics)
-* [Benchmark](#Benchmark)
+* [Benchmark](#benchmark)
 * [License](#license)
 
-## Introduction ##
+# Quick Start #
+
+## Quick Start for S3 API on Docker ##
+
+`docker run -p 8333:8333 chrislusf/seaweedfs server -s3`
+
+## Quick Start with Single Binary ##
+* Download the latest binary from https://github.com/seaweedfs/seaweedfs/releases and unzip a single binary file `weed` or `weed.exe`. Or run `go install github.com/seaweedfs/seaweedfs/weed@latest`.
+* Run `weed server -dir=/some/data/dir -s3` to start one master, one volume server, one filer, and one S3 gateway.
+
+Also, to increase capacity, just add more volume servers by running `weed volume -dir="/some/data/dir2" -mserver="<master_host>:9333" -port=8081` locally, or on a different machine, or on thousands of machines. That is it!
+
+## Quick Start SeaweedFS S3 on AWS ##
+* Setup fast production-ready [SeaweedFS S3 on AWS with cloudformation](https://aws.amazon.com/marketplace/pp/prodview-nzelz5gprlrjc)
+
+# Introduction #
 
 SeaweedFS is a simple and highly scalable distributed file system. There are two objectives:
 
 1. to store billions of files!
 2. to serve the files fast!
 
-SeaweedFS started as an Object Store to handle small files efficiently. Instead of managing all file metadata in a central master, the central master only manages file volumes, and it lets these volume servers manage files and their metadata. This relieves concurrency pressure from the central master and spreads file metadata into volume servers, allowing faster file access (O(1), usually just one disk read operation).
+SeaweedFS started as an Object Store to handle small files efficiently. 
+Instead of managing all file metadata in a central master, 
+the central master only manages volumes on volume servers, 
+and these volume servers manage files and their metadata. 
+This relieves concurrency pressure from the central master and spreads file metadata into volume servers, 
+allowing faster file access (O(1), usually just one disk read operation).
 
-SeaweedFS can transparently integrate with the cloud. With hot data on local cluster, and warm data on the cloud with O(1) access time, SeaweedFS can achieve both fast local access time and elastic cloud storage capacity, without any client side changes.
+There is only 40 bytes of disk storage overhead for each file's metadata. 
+It is so simple with O(1) disk reads that you are welcome to challenge the performance with your actual use cases.
 
-There is only 40 bytes of disk storage overhead for each file's metadata. It is so simple with O(1) disk reads that you are welcome to challenge the performance with your actual use cases.
+SeaweedFS started by implementing [Facebook's Haystack design paper](http://www.usenix.org/event/osdi10/tech/full_papers/Beaver.pdf). 
+Also, SeaweedFS implements erasure coding with ideas from 
+[f4: Facebook’s Warm BLOB Storage System](https://www.usenix.org/system/files/conference/osdi14/osdi14-paper-muralidhar.pdf), and has a lot of similarities with [Facebook’s Tectonic Filesystem](https://www.usenix.org/system/files/fast21-pan.pdf)
 
-SeaweedFS started by implementing [Facebook's Haystack design paper](http://www.usenix.org/event/osdi10/tech/full_papers/Beaver.pdf). Also, SeaweedFS implements erasure coding with ideas from [f4: Facebook’s Warm BLOB Storage System](https://www.usenix.org/system/files/conference/osdi14/osdi14-paper-muralidhar.pdf)
+On top of the object store, optional [Filer] can support directories and POSIX attributes. 
+Filer is a separate linearly-scalable stateless server with customizable metadata stores, 
+e.g., MySql, Postgres, Redis, Cassandra, HBase, Mongodb, Elastic Search, LevelDB, RocksDB, Sqlite, MemSql, TiDB, Etcd, CockroachDB, YDB, etc.
 
-On top of the object store, optional [Filer] can support directories and POSIX attributes. Filer is a separate linearly-scalable stateless server with customizable metadata stores, e.g., MySql, Postgres, Mongodb, Redis, Etcd, Cassandra, LevelDB, MemSql, TiDB, TiKV, CockroachDB, etc.
+For any distributed key value stores, the large values can be offloaded to SeaweedFS. 
+With the fast access speed and linearly scalable capacity, 
+SeaweedFS can work as a distributed [Key-Large-Value store][KeyLargeValueStore].
+
+SeaweedFS can transparently integrate with the cloud. 
+With hot data on local cluster, and warm data on the cloud with O(1) access time, 
+SeaweedFS can achieve both fast local access time and elastic cloud storage capacity.
+What's more, the cloud storage access API cost is minimized. 
+Faster and cheaper than direct cloud storage!
 
 [Back to TOC](#table-of-contents)
 
+# Features #
 ## Additional Features ##
 * Can choose no replication or different replication levels, rack and data center aware.
 * Automatic master servers failover - no single point of failure (SPOF).
-* Automatic Gzip compression depending on file mime type.
+* Automatic Gzip compression depending on file MIME type.
 * Automatic compaction to reclaim disk space after deletion or update.
 * [Automatic entry TTL expiration][VolumeServerTTL].
-* Any server with some disk spaces can add to the total storage space.
-* Adding/Removing servers does **not** cause any data re-balancing.
+* Any server with some disk space can add to the total storage space.
+* Adding/Removing servers does **not** cause any data re-balancing unless triggered by admin commands.
 * Optional picture resizing.
 * Support ETag, Accept-Range, Last-Modified, etc.
 * Support in-memory/leveldb/readonly mode tuning for memory/performance balance.
 * Support rebalancing the writable and readonly volumes.
+* [Customizable Multiple Storage Tiers][TieredStorage]: Customizable storage disk types to balance performance and cost.
 * [Transparent cloud integration][CloudTier]: unlimited capacity via tiered cloud storage for warm data.
 * [Erasure Coding for warm storage][ErasureCoding]  Rack-Aware 10.4 erasure coding reduces storage cost and increases availability.
 
 [Back to TOC](#table-of-contents)
 
 ## Filer Features ##
-* [filer server][Filer] provide "normal" directories and files via http.
-* [mount filer][Mount] to read and write files directly as a local directory via FUSE.
-* [Amazon S3 compatible API][AmazonS3API] to access files with S3 tooling.
-* [Hadoop Compatible File System][Hadoop] to access files from Hadoop/Spark/Flink/etc jobs.
-* [Async Backup To Cloud][BackupToCloud] has extremely fast local access and backups to Amazon S3, Google Cloud Storage, Azure, BackBlaze.
-* [WebDAV] access as a mapped drive on Mac and Windows, or from mobile devices.
+* [Filer server][Filer] provides "normal" directories and files via HTTP.
+* [File TTL][FilerTTL] automatically expires file metadata and actual file data.
+* [Mount filer][Mount] reads and writes files directly as a local directory via FUSE.
+* [Filer Store Replication][FilerStoreReplication] enables HA for filer meta data stores.
+* [Active-Active Replication][ActiveActiveAsyncReplication] enables asynchronous one-way or two-way cross cluster continuous replication.
+* [Amazon S3 compatible API][AmazonS3API] accesses files with S3 tooling.
+* [Hadoop Compatible File System][Hadoop] accesses files from Hadoop/Spark/Flink/etc or even runs HBase.
+* [Async Replication To Cloud][BackupToCloud] has extremely fast local access and backups to Amazon S3, Google Cloud Storage, Azure, BackBlaze.
+* [WebDAV] accesses as a mapped drive on Mac and Windows, or from mobile devices.
 * [AES256-GCM Encrypted Storage][FilerDataEncryption] safely stores the encrypted data.
-* [File TTL][FilerTTL] automatically purge file metadata and actual file data.
-* [Kubernetes CSI Driver][SeaweedFsCsiDriver] A Container Storage Interface (CSI) Driver.
+* [Super Large Files][SuperLargeFiles] stores large or super large files in tens of TB.
+* [Cloud Drive][CloudDrive] mounts cloud storage to local cluster, cached for fast read and write with asynchronous write back.
+* [Gateway to Remote Object Store][GatewayToRemoteObjectStore] mirrors bucket operations to remote object storage, in addition to [Cloud Drive][CloudDrive]
 
-[Filer]: https://github.com/chrislusf/seaweedfs/wiki/Directories-and-Files
-[Mount]: https://github.com/chrislusf/seaweedfs/wiki/Mount
-[AmazonS3API]: https://github.com/chrislusf/seaweedfs/wiki/Amazon-S3-API
-[BackupToCloud]: https://github.com/chrislusf/seaweedfs/wiki/Backup-to-Cloud
-[Hadoop]: https://github.com/chrislusf/seaweedfs/wiki/Hadoop-Compatible-File-System
-[WebDAV]: https://github.com/chrislusf/seaweedfs/wiki/WebDAV
-[ErasureCoding]: https://github.com/chrislusf/seaweedfs/wiki/Erasure-coding-for-warm-storage
-[CloudTier]: https://github.com/chrislusf/seaweedfs/wiki/Cloud-Tier
-[FilerDataEncryption]: https://github.com/chrislusf/seaweedfs/wiki/Filer-Data-Encryption
-[FilerTTL]: https://github.com/chrislusf/seaweedfs/wiki/Filer-Stores
-[VolumeServerTTL]: https://github.com/chrislusf/seaweedfs/wiki/Store-file-with-a-Time-To-Live
+## Kubernetes ##
+* [Kubernetes CSI Driver][SeaweedFsCsiDriver] A Container Storage Interface (CSI) Driver. [![Docker Pulls](https://img.shields.io/docker/pulls/chrislusf/seaweedfs-csi-driver.svg?maxAge=4800)](https://hub.docker.com/r/chrislusf/seaweedfs-csi-driver/)
+* [SeaweedFS Operator](https://github.com/seaweedfs/seaweedfs-operator)
+
+[Filer]: https://github.com/seaweedfs/seaweedfs/wiki/Directories-and-Files
+[SuperLargeFiles]: https://github.com/seaweedfs/seaweedfs/wiki/Data-Structure-for-Large-Files
+[Mount]: https://github.com/seaweedfs/seaweedfs/wiki/FUSE-Mount
+[AmazonS3API]: https://github.com/seaweedfs/seaweedfs/wiki/Amazon-S3-API
+[BackupToCloud]: https://github.com/seaweedfs/seaweedfs/wiki/Async-Replication-to-Cloud
+[Hadoop]: https://github.com/seaweedfs/seaweedfs/wiki/Hadoop-Compatible-File-System
+[WebDAV]: https://github.com/seaweedfs/seaweedfs/wiki/WebDAV
+[ErasureCoding]: https://github.com/seaweedfs/seaweedfs/wiki/Erasure-coding-for-warm-storage
+[TieredStorage]: https://github.com/seaweedfs/seaweedfs/wiki/Tiered-Storage
+[CloudTier]: https://github.com/seaweedfs/seaweedfs/wiki/Cloud-Tier
+[FilerDataEncryption]: https://github.com/seaweedfs/seaweedfs/wiki/Filer-Data-Encryption
+[FilerTTL]: https://github.com/seaweedfs/seaweedfs/wiki/Filer-Stores
+[VolumeServerTTL]: https://github.com/seaweedfs/seaweedfs/wiki/Store-file-with-a-Time-To-Live
 [SeaweedFsCsiDriver]: https://github.com/seaweedfs/seaweedfs-csi-driver
+[ActiveActiveAsyncReplication]: https://github.com/seaweedfs/seaweedfs/wiki/Filer-Active-Active-cross-cluster-continuous-synchronization
+[FilerStoreReplication]: https://github.com/seaweedfs/seaweedfs/wiki/Filer-Store-Replication
+[KeyLargeValueStore]: https://github.com/seaweedfs/seaweedfs/wiki/Filer-as-a-Key-Large-Value-Store
+[CloudDrive]: https://github.com/seaweedfs/seaweedfs/wiki/Cloud-Drive-Architecture
+[GatewayToRemoteObjectStore]: https://github.com/seaweedfs/seaweedfs/wiki/Gateway-to-Remote-Object-Storage
+
 
 [Back to TOC](#table-of-contents)
 
-## Example Usage ##
+## Example: Using Seaweed Object Store ##
 
 By default, the master node runs on port 9333, and the volume nodes run on port 8080.
 Let's start one master node, and two volume nodes on port 8080 and 8081. Ideally, they should be started from different machines. We'll use localhost as an example.
@@ -159,7 +208,7 @@ SeaweedFS uses HTTP REST operations to read, write, and delete. The responses ar
 
 ### Write File ###
 
-To upload a file: first, send a HTTP POST, PUT, or GET request to `/dir/assign` to get an `fid` and a volume server url:
+To upload a file: first, send a HTTP POST, PUT, or GET request to `/dir/assign` to get an `fid` and a volume server URL:
 
 ```
 > curl http://localhost:9333/dir/assign
@@ -208,7 +257,7 @@ First look up the volume server's URLs by the file's volumeId:
 
 Since (usually) there are not too many volume servers, and volumes don't move often, you can cache the results most of the time. Depending on the replication type, one volume can have multiple replica locations. Just randomly pick one location to read.
 
-Now you can take the public url, render the url or directly read from the volume server via url:
+Now you can take the public URL, render the URL or directly read from the volume server via URL:
 
 ```
  http://localhost:8080/3,01637037d6.jpg
@@ -255,7 +304,7 @@ The replication parameter options are:
 
 More details about replication can be found [on the wiki][Replication].
 
-[Replication]: https://github.com/chrislusf/seaweedfs/wiki/Replication
+[Replication]: https://github.com/seaweedfs/seaweedfs/wiki/Replication
 
 You can also set the default replication strategy when starting the master server.
 
@@ -280,14 +329,14 @@ When requesting a file key, an optional "dataCenter" parameter can limit the ass
   * [Chunking large files][feat-3]
   * [Collection as a Simple Name Space][feat-4]
 
-[feat-1]: https://github.com/chrislusf/seaweedfs/wiki/Failover-Master-Server
-[feat-2]: https://github.com/chrislusf/seaweedfs/wiki/Optimization#insert-with-your-own-keys
-[feat-3]: https://github.com/chrislusf/seaweedfs/wiki/Optimization#upload-large-files
-[feat-4]: https://github.com/chrislusf/seaweedfs/wiki/Optimization#collection-as-a-simple-name-space
+[feat-1]: https://github.com/seaweedfs/seaweedfs/wiki/Failover-Master-Server
+[feat-2]: https://github.com/seaweedfs/seaweedfs/wiki/Optimization#insert-with-your-own-keys
+[feat-3]: https://github.com/seaweedfs/seaweedfs/wiki/Optimization#upload-large-files
+[feat-4]: https://github.com/seaweedfs/seaweedfs/wiki/Optimization#collection-as-a-simple-name-space
 
 [Back to TOC](#table-of-contents)
 
-## Architecture ##
+## Object Store Architecture ##
 
 Usually distributed file systems split each file into chunks, a central master keeps a mapping of filenames, chunk indices to chunk handles, and also which chunks each chunk server has.
 
@@ -309,9 +358,9 @@ On each write request, the master server also generates a file key, which is a g
 
 ### Write and Read files ###
 
-When a client sends a write request, the master server returns (volume id, file key, file cookie, volume node url) for the file. The client then contacts the volume node and POSTs the file content.
+When a client sends a write request, the master server returns (volume id, file key, file cookie, volume node URL) for the file. The client then contacts the volume node and POSTs the file content.
 
-When a client needs to read a file based on (volume id, file key, file cookie), it asks the master server by the volume id for the (volume node url, volume node public url), or retrieves this from a cache. Then the client can GET the content, or just render the URL on web pages and let browsers fetch the content.
+When a client needs to read a file based on (volume id, file key, file cookie), it asks the master server by the volume id for the (volume node URL, volume node public URL), or retrieves this from a cache. Then the client can GET the content, or just render the URL on web pages and let browsers fetch the content.
 
 Please see the example for details on the write-read process.
 
@@ -335,7 +384,7 @@ Usually hot data are fresh and warm data are old. SeaweedFS puts the newly creat
 
 With the O(1) access time, the network latency cost is kept at minimum. 
 
-If the hot~warm data is split as 20~80, with 20 servers, you can achieve storage capacity of 100 servers. That's a cost saving of 80%! Or you can repurpose the 80 servers to store new data also, and get 5X storage throughput.
+If the hot/warm data is split as 20/80, with 20 servers, you can achieve storage capacity of 100 servers. That's a cost saving of 80%! Or you can repurpose the 80 servers to store new data also, and get 5X storage throughput.
 
 [Back to TOC](#table-of-contents)
 
@@ -344,6 +393,8 @@ If the hot~warm data is split as 20~80, with 20 servers, you can achieve storage
 Most other distributed file systems seem more complicated than necessary.
 
 SeaweedFS is meant to be fast and simple, in both setup and operation. If you do not understand how it works when you reach here, we've failed! Please raise an issue with any questions or update this file with clarifications.
+
+SeaweedFS is constantly moving forward. Same with other systems. These comparisons can be outdated quickly. Please help to keep them updated.
 
 [Back to TOC](#table-of-contents)
 
@@ -363,16 +414,17 @@ The architectures are mostly the same. SeaweedFS aims to store and read files fa
 
 * SeaweedFS optimizes for small files, ensuring O(1) disk seek operation, and can also handle large files.
 * SeaweedFS statically assigns a volume id for a file. Locating file content becomes just a lookup of the volume id, which can be easily cached.
-* SeaweedFS Filer metadata store can be any well-known and proven data stores, e.g., Cassandra, Mongodb, Redis, Etcd, MySql, Postgres, MemSql, TiDB, CockroachDB, etc, and is easy to customized.
+* SeaweedFS Filer metadata store can be any well-known and proven data store, e.g., Redis, Cassandra, HBase, Mongodb, Elastic Search, MySql, Postgres, Sqlite, MemSql, TiDB, CockroachDB, Etcd, YDB etc, and is easy to customize.
 * SeaweedFS Volume server also communicates directly with clients via HTTP, supporting range queries, direct uploads, etc.
 
-| System         | File Meta                       | File Content Read| POSIX  | REST API | Optimized for small files |
+| System         | File Metadata                   | File Content Read| POSIX  | REST API | Optimized for large number of small files |
 | -------------  | ------------------------------- | ---------------- | ------ | -------- | ------------------------- |
 | SeaweedFS      | lookup volume id, cacheable     | O(1) disk seek   |        | Yes      | Yes                       |
 | SeaweedFS Filer| Linearly Scalable, Customizable | O(1) disk seek   | FUSE   | Yes      | Yes                       |
 | GlusterFS      | hashing          |                  | FUSE, NFS          |          |                           |
 | Ceph           | hashing + rules  |                  | FUSE               | Yes      |                           |
 | MooseFS        | in memory        |                  | FUSE               |       | No                          |
+| MinIO          | separate meta file for each file  |                  |         | Yes   | No                          |
 
 [Back to TOC](#table-of-contents)
 
@@ -394,17 +446,17 @@ MooseFS Master Server keeps all meta data in memory. Same issue as HDFS namenode
 
 ### Compared to Ceph ###
 
-Ceph can be setup similar to SeaweedFS as a key->blob store. It is much more complicated, with the need to support layers on top of it. [Here is a more detailed comparison](https://github.com/chrislusf/seaweedfs/issues/120)
+Ceph can be setup similar to SeaweedFS as a key->blob store. It is much more complicated, with the need to support layers on top of it. [Here is a more detailed comparison](https://github.com/seaweedfs/seaweedfs/issues/120)
 
 SeaweedFS has a centralized master group to look up free volumes, while Ceph uses hashing and metadata servers to locate its objects. Having a centralized master makes it easy to code and manage.
 
-Same as SeaweedFS, Ceph is also based on the object store RADOS. Ceph is rather complicated with mixed reviews.
+Ceph, like SeaweedFS, is based on the object store RADOS. Ceph is rather complicated with mixed reviews.
 
-Ceph uses CRUSH hashing to automatically manage the data placement. SeaweedFS places data by assigned volumes.
+Ceph uses CRUSH hashing to automatically manage data placement, which is efficient to locate the data. But the data has to be placed according to the CRUSH algorithm. Any wrong configuration would cause data loss. Topology changes, such as adding new servers to increase capacity, will cause data migration with high IO cost to fit the CRUSH algorithm. SeaweedFS places data by assigning them to any writable volumes. If writes to one volume failed, just pick another volume to write. Adding more volumes is also as simple as it can be.
 
 SeaweedFS is optimized for small files. Small files are stored as one continuous block of content, with at most 8 unused bytes between files. Small file access is O(1) disk read.
 
-SeaweedFS Filer uses off-the-shelf stores, such as MySql, Postgres, Mongodb, Redis, Etcd, Cassandra, MemSql, TiDB, CockroachCB, to manage file directories. These stores are proven, scalable, and easier to manage.
+SeaweedFS Filer uses off-the-shelf stores, such as MySql, Postgres, Sqlite, Mongodb, Redis, Elastic Search, Cassandra, HBase, MemSql, TiDB, CockroachCB, Etcd, YDB, to manage file directories. These stores are proven, scalable, and easier to manage.
 
 | SeaweedFS         | comparable to Ceph | advantage |
 | -------------  | ------------- | ---------------- |
@@ -414,18 +466,30 @@ SeaweedFS Filer uses off-the-shelf stores, such as MySql, Postgres, Mongodb, Red
 
 [Back to TOC](#table-of-contents)
 
+### Compared to MinIO ###
+
+MinIO follows AWS S3 closely and is ideal for testing for S3 API. It has good UI, policies, versionings, etc. SeaweedFS is trying to catch up here. It is also possible to put MinIO as a gateway in front of SeaweedFS later.
+
+MinIO metadata are in simple files. Each file write will incur extra writes to corresponding meta file.
+
+MinIO does not have optimization for lots of small files. The files are simply stored as is to local disks.
+Plus the extra meta file and shards for erasure coding, it only amplifies the LOSF problem.
+
+MinIO has multiple disk IO to read one file. SeaweedFS has O(1) disk reads, even for erasure coded files.
+
+MinIO has full-time erasure coding. SeaweedFS uses replication on hot data for faster speed and optionally applies erasure coding on warm data.
+
+MinIO does not have POSIX-like API support.
+
+MinIO has specific requirements on storage layout. It is not flexible to adjust capacity. In SeaweedFS, just start one volume server pointing to the master. That's all.
+
 ## Dev Plan ##
 
-More tools and documentation, on how to maintain and scale the system. For example, how to move volumes, automatically balancing data, how to grow volumes, how to check system status, etc.
-Other key features include: Erasure Encoding, JWT security.
+* More tools and documentation, on how to manage and scale the system.
+* Read and write stream data.
+* Support structured data.
 
 This is a super exciting project! And we need helpers and [support](https://www.patreon.com/seaweedfs)!
-
-BTW, We suggest run the code style check script `util/gostd` before you push your branch to remote, it will make SeaweedFS easy to review, maintain and develop:
-
-```
-$ ./util/gostd
-```
 
 [Back to TOC](#table-of-contents)
 
@@ -437,32 +501,20 @@ Step 1: install go on your machine and setup the environment by following the in
 
 https://golang.org/doc/install
 
-make sure you set up your $GOPATH
+make sure to define your $GOPATH
 
 
-Step 2: also you may need to install Mercurial by following the instructions at:
-
-http://mercurial.selenic.com/downloads
-
+Step 2: checkout this repo:
+```bash
+git clone https://github.com/seaweedfs/seaweedfs.git
+```
 Step 3: download, compile, and install the project by executing the following command
 
 ```bash
-go get github.com/chrislusf/seaweedfs/weed
+cd seaweedfs/weed && make install
 ```
 
 Once this is done, you will find the executable "weed" in your `$GOPATH/bin` directory
-
-Note:
-* If you got into this problem, try to `rm -Rf $GOPATH/src/go.etcd.io/etcd/vendor/golang.org/x/net/trace` and build again.
-```
-panic: /debug/requests is already registered. You may have two independent copies of golang.org/x/net/trace in your binary, trying to maintain separate state. This may involve a vendored copy of golang.org/x/net/trace.
-```
-
-Step 4: after you modify your code locally, you could start a local build by calling `go install` under
-
-```
-$GOPATH/src/github.com/chrislusf/seaweedfs/weed
-```
 
 [Back to TOC](#table-of-contents)
 
@@ -486,7 +538,7 @@ Write 1 million 1KB file:
 ```
 Concurrency Level:      16
 Time taken for tests:   66.753 seconds
-Complete requests:      1048576
+Completed requests:      1048576
 Failed requests:        0
 Total transferred:      1106789009 bytes
 Requests per second:    15708.23 [#/sec]
@@ -512,7 +564,7 @@ Randomly read 1 million files:
 ```
 Concurrency Level:      16
 Time taken for tests:   22.301 seconds
-Complete requests:      1048576
+Completed requests:      1048576
 Failed requests:        0
 Total transferred:      1106812873 bytes
 Requests per second:    47019.38 [#/sec]
@@ -550,6 +602,6 @@ The text of this page is available for modification and reuse under the terms of
 
 [Back to TOC](#table-of-contents)
 
-## Stargazers over time ##
+## Stargazers over time
 
-[![Stargazers over time](https://starcharts.herokuapp.com/chrislusf/seaweedfs.svg)](https://starcharts.herokuapp.com/chrislusf/seaweedfs)
+[![Stargazers over time](https://starchart.cc/chrislusf/seaweedfs.svg)](https://starchart.cc/chrislusf/seaweedfs)

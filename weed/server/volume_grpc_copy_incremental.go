@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/chrislusf/seaweedfs/weed/pb/volume_server_pb"
-	"github.com/chrislusf/seaweedfs/weed/storage/backend"
-	"github.com/chrislusf/seaweedfs/weed/storage/needle"
+	"github.com/seaweedfs/seaweedfs/weed/pb/volume_server_pb"
+	"github.com/seaweedfs/seaweedfs/weed/storage/backend"
+	"github.com/seaweedfs/seaweedfs/weed/storage/needle"
 )
 
 func (vs *VolumeServer) VolumeIncrementalCopy(req *volume_server_pb.VolumeIncrementalCopyRequest, stream volume_server_pb.VolumeServer_VolumeIncrementalCopyServer) error {
@@ -27,7 +27,7 @@ func (vs *VolumeServer) VolumeIncrementalCopy(req *volume_server_pb.VolumeIncrem
 		return nil
 	}
 
-	startOffset := foundOffset.ToAcutalOffset()
+	startOffset := foundOffset.ToActualOffset()
 
 	buf := make([]byte, 1024*1024*2)
 	return sendFileContent(v.DataBackend, buf, startOffset, int64(stopOffset), stream)

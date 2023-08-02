@@ -1,6 +1,7 @@
 package needle
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -8,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chrislusf/seaweedfs/weed/images"
-	. "github.com/chrislusf/seaweedfs/weed/storage/types"
+	"github.com/seaweedfs/seaweedfs/weed/images"
+	. "github.com/seaweedfs/seaweedfs/weed/storage/types"
 )
 
 const (
@@ -24,15 +25,15 @@ const (
 type Needle struct {
 	Cookie Cookie   `comment:"random number to mitigate brute force lookups"`
 	Id     NeedleId `comment:"needle id"`
-	Size   uint32   `comment:"sum of DataSize,Data,NameSize,Name,MimeSize,Mime"`
+	Size   Size     `comment:"sum of DataSize,Data,NameSize,Name,MimeSize,Mime"`
 
 	DataSize     uint32 `comment:"Data size"` //version2
 	Data         []byte `comment:"The actual file data"`
 	Flags        byte   `comment:"boolean flags"` //version2
 	NameSize     uint8  //version2
-	Name         []byte `comment:"maximum 256 characters"` //version2
+	Name         []byte `comment:"maximum 255 characters"` //version2
 	MimeSize     uint8  //version2
-	Mime         []byte `comment:"maximum 256 characters"` //version2
+	Mime         []byte `comment:"maximum 255 characters"` //version2
 	PairsSize    uint16 //version2
 	Pairs        []byte `comment:"additional name value pairs, json format, maximum 64kB"`
 	LastModified uint64 //only store LastModifiedBytesLength bytes, which is 5 bytes to disk
@@ -44,13 +45,13 @@ type Needle struct {
 }
 
 func (n *Needle) String() (str string) {
-	str = fmt.Sprintf("%s Size:%d, DataSize:%d, Name:%s, Mime:%s", formatNeedleIdCookie(n.Id, n.Cookie), n.Size, n.DataSize, n.Name, n.Mime)
+	str = fmt.Sprintf("%s Size:%d, DataSize:%d, Name:%s, Mime:%s Compressed:%v", formatNeedleIdCookie(n.Id, n.Cookie), n.Size, n.DataSize, n.Name, n.Mime, n.IsCompressed())
 	return
 }
 
-func CreateNeedleFromRequest(r *http.Request, fixJpgOrientation bool, sizeLimit int64) (n *Needle, originalSize int, e error) {
+func CreateNeedleFromRequest(r *http.Request, fixJpgOrientation bool, sizeLimit int64, bytesBuffer *bytes.Buffer) (n *Needle, originalSize int, contentMd5 string, e error) {
 	n = new(Needle)
-	pu, e := ParseUpload(r, sizeLimit)
+	pu, e := ParseUpload(r, sizeLimit, bytesBuffer)
 	if e != nil {
 		return
 	}
@@ -58,6 +59,7 @@ func CreateNeedleFromRequest(r *http.Request, fixJpgOrientation bool, sizeLimit 
 	originalSize = pu.OriginalDataSize
 	n.LastModified = pu.ModifiedTime
 	n.Ttl = pu.Ttl
+	contentMd5 = pu.ContentMd5
 
 	if len(pu.FileName) < 256 {
 		n.Name = []byte(pu.FileName)
@@ -81,7 +83,8 @@ func CreateNeedleFromRequest(r *http.Request, fixJpgOrientation bool, sizeLimit 
 		}
 	}
 	if pu.IsGzipped {
-		n.SetGzipped()
+		// println(r.URL.Path, "is set to compressed", pu.FileName, pu.IsGzipped, "dataSize", pu.OriginalDataSize)
+		n.SetIsCompressed()
 	}
 	if n.LastModified == 0 {
 		n.LastModified = uint64(time.Now().Unix())
@@ -139,6 +142,14 @@ func (n *Needle) ParsePath(fid string) (err error) {
 	return err
 }
 
+func GetAppendAtNs(volumeLastAppendAtNs uint64) uint64 {
+	return max(uint64(time.Now().UnixNano()), volumeLastAppendAtNs+1)
+}
+
+func (n *Needle) UpdateAppendAtNs(volumeLastAppendAtNs uint64) {
+	n.AppendAtNs = max(uint64(time.Now().UnixNano()), volumeLastAppendAtNs+1)
+}
+
 func ParseNeedleIdCookie(key_hash_string string) (NeedleId, Cookie, error) {
 	if len(key_hash_string) <= CookieSize*2 {
 		return NeedleIdEmpty, 0, fmt.Errorf("KeyHash is too short.")
@@ -160,4 +171,11 @@ func ParseNeedleIdCookie(key_hash_string string) (NeedleId, Cookie, error) {
 
 func (n *Needle) LastModifiedString() string {
 	return time.Unix(int64(n.LastModified), 0).Format("2006-01-02T15:04:05")
+}
+
+func max(x, y uint64) uint64 {
+	if x <= y {
+		return y
+	}
+	return x
 }

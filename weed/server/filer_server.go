@@ -8,72 +8,110 @@ import (
 	"sync"
 	"time"
 
+	"github.com/seaweedfs/seaweedfs/weed/stats"
+
 	"google.golang.org/grpc"
 
-	"github.com/chrislusf/seaweedfs/weed/util/grace"
+	"github.com/seaweedfs/seaweedfs/weed/util/grace"
 
-	"github.com/chrislusf/seaweedfs/weed/operation"
-	"github.com/chrislusf/seaweedfs/weed/pb"
-	"github.com/chrislusf/seaweedfs/weed/pb/master_pb"
-	"github.com/chrislusf/seaweedfs/weed/stats"
-	"github.com/chrislusf/seaweedfs/weed/util"
+	"github.com/seaweedfs/seaweedfs/weed/operation"
+	"github.com/seaweedfs/seaweedfs/weed/pb"
+	"github.com/seaweedfs/seaweedfs/weed/pb/filer_pb"
+	"github.com/seaweedfs/seaweedfs/weed/pb/master_pb"
+	"github.com/seaweedfs/seaweedfs/weed/util"
 
-	"github.com/chrislusf/seaweedfs/weed/filer2"
-	_ "github.com/chrislusf/seaweedfs/weed/filer2/cassandra"
-	_ "github.com/chrislusf/seaweedfs/weed/filer2/etcd"
-	_ "github.com/chrislusf/seaweedfs/weed/filer2/leveldb"
-	_ "github.com/chrislusf/seaweedfs/weed/filer2/leveldb2"
-	_ "github.com/chrislusf/seaweedfs/weed/filer2/mongodb"
-	_ "github.com/chrislusf/seaweedfs/weed/filer2/mysql"
-	_ "github.com/chrislusf/seaweedfs/weed/filer2/postgres"
-	_ "github.com/chrislusf/seaweedfs/weed/filer2/redis"
-	_ "github.com/chrislusf/seaweedfs/weed/filer2/redis2"
-	"github.com/chrislusf/seaweedfs/weed/glog"
-	"github.com/chrislusf/seaweedfs/weed/notification"
-	_ "github.com/chrislusf/seaweedfs/weed/notification/aws_sqs"
-	_ "github.com/chrislusf/seaweedfs/weed/notification/gocdk_pub_sub"
-	_ "github.com/chrislusf/seaweedfs/weed/notification/google_pub_sub"
-	_ "github.com/chrislusf/seaweedfs/weed/notification/kafka"
-	_ "github.com/chrislusf/seaweedfs/weed/notification/log"
-	"github.com/chrislusf/seaweedfs/weed/security"
+	"github.com/seaweedfs/seaweedfs/weed/filer"
+	_ "github.com/seaweedfs/seaweedfs/weed/filer/arangodb"
+	_ "github.com/seaweedfs/seaweedfs/weed/filer/cassandra"
+	_ "github.com/seaweedfs/seaweedfs/weed/filer/elastic/v7"
+	_ "github.com/seaweedfs/seaweedfs/weed/filer/etcd"
+	_ "github.com/seaweedfs/seaweedfs/weed/filer/hbase"
+	_ "github.com/seaweedfs/seaweedfs/weed/filer/leveldb"
+	_ "github.com/seaweedfs/seaweedfs/weed/filer/leveldb2"
+	_ "github.com/seaweedfs/seaweedfs/weed/filer/leveldb3"
+	_ "github.com/seaweedfs/seaweedfs/weed/filer/mongodb"
+	_ "github.com/seaweedfs/seaweedfs/weed/filer/mysql"
+	_ "github.com/seaweedfs/seaweedfs/weed/filer/mysql2"
+	_ "github.com/seaweedfs/seaweedfs/weed/filer/postgres"
+	_ "github.com/seaweedfs/seaweedfs/weed/filer/postgres2"
+	_ "github.com/seaweedfs/seaweedfs/weed/filer/redis"
+	_ "github.com/seaweedfs/seaweedfs/weed/filer/redis2"
+	_ "github.com/seaweedfs/seaweedfs/weed/filer/redis3"
+	_ "github.com/seaweedfs/seaweedfs/weed/filer/sqlite"
+	_ "github.com/seaweedfs/seaweedfs/weed/filer/ydb"
+	"github.com/seaweedfs/seaweedfs/weed/glog"
+	"github.com/seaweedfs/seaweedfs/weed/notification"
+	_ "github.com/seaweedfs/seaweedfs/weed/notification/aws_sqs"
+	_ "github.com/seaweedfs/seaweedfs/weed/notification/gocdk_pub_sub"
+	_ "github.com/seaweedfs/seaweedfs/weed/notification/google_pub_sub"
+	_ "github.com/seaweedfs/seaweedfs/weed/notification/kafka"
+	_ "github.com/seaweedfs/seaweedfs/weed/notification/log"
+	"github.com/seaweedfs/seaweedfs/weed/security"
 )
 
 type FilerOption struct {
-	Masters            []string
-	Collection         string
-	DefaultReplication string
-	DisableDirListing  bool
-	MaxMB              int
-	DirListingLimit    int
-	DataCenter         string
-	DefaultLevelDbDir  string
-	DisableHttp        bool
-	Host               string
-	Port               uint32
-	recursiveDelete    bool
-	Cipher             bool
+	Masters               map[string]pb.ServerAddress
+	FilerGroup            string
+	Collection            string
+	DefaultReplication    string
+	DisableDirListing     bool
+	MaxMB                 int
+	DirListingLimit       int
+	DataCenter            string
+	Rack                  string
+	DataNode              string
+	DefaultLevelDbDir     string
+	DisableHttp           bool
+	Host                  pb.ServerAddress
+	recursiveDelete       bool
+	Cipher                bool
+	SaveToFilerLimit      int64
+	ConcurrentUploadLimit int64
+	ShowUIDirectoryDelete bool
+	DownloadMaxBytesPs    int64
+	DiskType              string
 }
 
 type FilerServer struct {
+	inFlightDataSize      int64
+	inFlightDataLimitCond *sync.Cond
+
+	filer_pb.UnimplementedSeaweedFilerServer
 	option         *FilerOption
 	secret         security.SigningKey
-	filer          *filer2.Filer
+	filer          *filer.Filer
+	filerGuard     *security.Guard
 	grpcDialOption grpc.DialOption
+
+	// metrics read from the master
+	metricsAddress     string
+	metricsIntervalSec int
 
 	// notifying clients
 	listenersLock sync.Mutex
 	listenersCond *sync.Cond
 
-	brokers     map[string]map[string]bool
-	brokersLock sync.Mutex
+	// track known metadata listeners
+	knownListenersLock sync.Mutex
+	knownListeners     map[int32]int32
 }
 
 func NewFilerServer(defaultMux, readonlyMux *http.ServeMux, option *FilerOption) (fs *FilerServer, err error) {
 
+	v := util.GetViper()
+	signingKey := v.GetString("jwt.filer_signing.key")
+	v.SetDefault("jwt.filer_signing.expires_after_seconds", 10)
+	expiresAfterSec := v.GetInt("jwt.filer_signing.expires_after_seconds")
+
+	readSigningKey := v.GetString("jwt.filer_signing.read.key")
+	v.SetDefault("jwt.filer_signing.read.expires_after_seconds", 60)
+	readExpiresAfterSec := v.GetInt("jwt.filer_signing.read.expires_after_seconds")
+
 	fs = &FilerServer{
-		option:         option,
-		grpcDialOption: security.LoadClientTLS(util.GetViper(), "grpc.filer"),
-		brokers:        make(map[string]map[string]bool),
+		option:                option,
+		grpcDialOption:        security.LoadClientTLS(util.GetViper(), "grpc.filer"),
+		knownListeners:        make(map[int32]int32),
+		inFlightDataLimitCond: sync.NewCond(new(sync.Mutex)),
 	}
 	fs.listenersCond = sync.NewCond(&fs.listenersLock)
 
@@ -81,29 +119,38 @@ func NewFilerServer(defaultMux, readonlyMux *http.ServeMux, option *FilerOption)
 		glog.Fatal("master list is required!")
 	}
 
-	fs.filer = filer2.NewFiler(option.Masters, fs.grpcDialOption, option.Host, option.Port, option.Collection, option.DefaultReplication, fs.notifyMetaListeners)
+	fs.filer = filer.NewFiler(option.Masters, fs.grpcDialOption, option.Host, option.FilerGroup, option.Collection, option.DefaultReplication, option.DataCenter, func() {
+		fs.listenersCond.Broadcast()
+	})
 	fs.filer.Cipher = option.Cipher
+	// we do not support IP whitelist right now
+	fs.filerGuard = security.NewGuard([]string{}, signingKey, expiresAfterSec, readSigningKey, readExpiresAfterSec)
 
-	maybeStartMetrics(fs, option)
+	fs.checkWithMaster()
 
-	go fs.filer.KeepConnectedToMaster()
+	go stats.LoopPushingMetric("filer", string(fs.option.Host), fs.metricsAddress, fs.metricsIntervalSec)
+	go fs.filer.KeepMasterClientConnected()
 
-	v := util.GetViper()
 	if !util.LoadConfiguration("filer", false) {
-		v.Set("leveldb2.enabled", true)
-		v.Set("leveldb2.dir", option.DefaultLevelDbDir)
+		v.SetDefault("leveldb2.enabled", true)
+		v.SetDefault("leveldb2.dir", option.DefaultLevelDbDir)
 		_, err := os.Stat(option.DefaultLevelDbDir)
 		if os.IsNotExist(err) {
 			os.MkdirAll(option.DefaultLevelDbDir, 0755)
 		}
+		glog.V(0).Infof("default to create filer store dir in %s", option.DefaultLevelDbDir)
+	} else {
+		glog.Warningf("skipping default store dir in %s", option.DefaultLevelDbDir)
 	}
 	util.LoadConfiguration("notification", false)
 
 	fs.option.recursiveDelete = v.GetBool("filer.options.recursive_delete")
 	v.SetDefault("filer.options.buckets_folder", "/buckets")
 	fs.filer.DirBucketsPath = v.GetString("filer.options.buckets_folder")
-	fs.filer.FsyncBuckets = v.GetStringSlice("filer.options.buckets_fsync")
-	fs.filer.LoadConfiguration(v)
+	// TODO deprecated, will be be removed after 2020-12-31
+	// replaced by https://github.com/seaweedfs/seaweedfs/wiki/Path-Specific-Configuration
+	// fs.filer.FsyncBuckets = v.GetStringSlice("filer.options.buckets_fsync")
+	isFresh := fs.filer.LoadConfiguration(v)
 
 	notification.LoadConfiguration(v, "notification.")
 
@@ -112,34 +159,46 @@ func NewFilerServer(defaultMux, readonlyMux *http.ServeMux, option *FilerOption)
 		defaultMux.HandleFunc("/", fs.filerHandler)
 	}
 	if defaultMux != readonlyMux {
+		handleStaticResources(readonlyMux)
 		readonlyMux.HandleFunc("/", fs.readonlyFilerHandler)
 	}
 
-	fs.filer.LoadBuckets()
+	existingNodes := fs.filer.ListExistingPeerUpdates()
+	startFromTime := time.Now().Add(-filer.LogFlushInterval)
+	if isFresh {
+		glog.V(0).Infof("%s bootstrap from peers %+v", option.Host, existingNodes)
+		if err := fs.filer.MaybeBootstrapFromPeers(option.Host, existingNodes, startFromTime); err != nil {
+			glog.Fatalf("%s bootstrap from %+v", option.Host, existingNodes)
+		}
+	}
+	fs.filer.AggregateFromPeers(option.Host, existingNodes, startFromTime)
+
+	fs.filer.LoadFilerConf()
+
+	fs.filer.LoadRemoteStorageConfAndMapping()
 
 	grace.OnInterrupt(func() {
 		fs.filer.Shutdown()
 	})
 
+	fs.filer.Dlm.LockRing.SetTakeSnapshotCallback(fs.OnDlmChangeSnapshot)
+
 	return fs, nil
 }
 
-func maybeStartMetrics(fs *FilerServer, option *FilerOption) {
-
-	for _, master := range option.Masters {
-		_, err := pb.ParseFilerGrpcAddress(master)
-		if err != nil {
-			glog.Fatalf("invalid master address %s: %v", master, err)
-		}
-	}
+func (fs *FilerServer) checkWithMaster() {
 
 	isConnected := false
-	var metricsAddress string
-	var metricsIntervalSec int
-	var readErr error
 	for !isConnected {
-		for _, master := range option.Masters {
-			metricsAddress, metricsIntervalSec, readErr = readFilerConfiguration(fs.grpcDialOption, master)
+		for _, master := range fs.option.Masters {
+			readErr := operation.WithMasterServerClient(false, master, fs.grpcDialOption, func(masterClient master_pb.SeaweedClient) error {
+				resp, err := masterClient.GetMasterConfiguration(context.Background(), &master_pb.GetMasterConfigurationRequest{})
+				if err != nil {
+					return fmt.Errorf("get master %s configuration: %v", master, err)
+				}
+				fs.metricsAddress, fs.metricsIntervalSec = resp.MetricsAddress, int(resp.MetricsIntervalSeconds)
+				return nil
+			})
 			if readErr == nil {
 				isConnected = true
 			} else {
@@ -147,23 +206,5 @@ func maybeStartMetrics(fs *FilerServer, option *FilerOption) {
 			}
 		}
 	}
-	if metricsAddress == "" && metricsIntervalSec <= 0 {
-		return
-	}
-	go stats.LoopPushingMetric("filer", stats.SourceName(option.Port), stats.FilerGather,
-		func() (addr string, intervalSeconds int) {
-			return metricsAddress, metricsIntervalSec
-		})
-}
 
-func readFilerConfiguration(grpcDialOption grpc.DialOption, masterAddress string) (metricsAddress string, metricsIntervalSec int, err error) {
-	err = operation.WithMasterServerClient(masterAddress, grpcDialOption, func(masterClient master_pb.SeaweedClient) error {
-		resp, err := masterClient.GetMasterConfiguration(context.Background(), &master_pb.GetMasterConfigurationRequest{})
-		if err != nil {
-			return fmt.Errorf("get master %s configuration: %v", masterAddress, err)
-		}
-		metricsAddress, metricsIntervalSec = resp.MetricsAddress, int(resp.MetricsIntervalSeconds)
-		return nil
-	})
-	return
 }

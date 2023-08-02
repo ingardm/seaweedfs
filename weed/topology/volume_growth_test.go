@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/chrislusf/seaweedfs/weed/sequence"
-	"github.com/chrislusf/seaweedfs/weed/storage"
-	"github.com/chrislusf/seaweedfs/weed/storage/needle"
-	"github.com/chrislusf/seaweedfs/weed/storage/super_block"
+	"github.com/seaweedfs/seaweedfs/weed/sequence"
+	"github.com/seaweedfs/seaweedfs/weed/storage"
+	"github.com/seaweedfs/seaweedfs/weed/storage/needle"
+	"github.com/seaweedfs/seaweedfs/weed/storage/super_block"
 )
 
 var topologyLayout = `
@@ -103,7 +103,13 @@ func setup(topologyLayout string) *Topology {
 						Version: needle.CurrentVersion}
 					server.AddOrUpdateVolume(vi)
 				}
-				server.UpAdjustMaxVolumeCountDelta(int64(serverMap["limit"].(float64)))
+
+				disk := server.getOrCreateDisk("")
+				deltaDiskUsages := newDiskUsages()
+				deltaDiskUsage := deltaDiskUsages.getOrCreateDisk("")
+				deltaDiskUsage.maxVolumeCount = int64(serverMap["limit"].(float64))
+				disk.UpAdjustDiskUsageDelta(deltaDiskUsages)
+
 			}
 		}
 	}
